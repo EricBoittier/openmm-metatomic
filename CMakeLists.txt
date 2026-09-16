@@ -24,27 +24,27 @@ function(openmm_metatomic_detect_prefixes)
         execute_process(
             COMMAND ${Python3_EXECUTABLE} -c
                 "from pathlib import Path
-import sys
 out = []
 try:
     import metatensor
     out.append(str(Path(metatensor.__file__).resolve().parent / 'lib' / 'cmake'))
 except Exception:
     pass
-        try:
-            import torch
-            out.append(torch.utils.cmake_prefix_path)
-            mm = '.'.join(torch.__version__.split('+')[0].split('.')[:2])
-            import metatensor_torch, metatomic_torch
-            out.append(str(Path(metatensor_torch.__file__).resolve().parent / f'torch-{mm}' / 'lib' / 'cmake'))
-            out.append(str(Path(metatomic_torch.__file__).resolve().parent / f'torch-{mm}' / 'lib' / 'cmake'))
-        except Exception:
-            pass
-        try:
-            import sphericart
-            out.append(str(Path(sphericart.__file__).resolve().parent / 'lib' / 'cmake'))
-        except Exception:
-            pass
+try:
+    import torch
+    out.append(torch.utils.cmake_prefix_path)
+    mm = '.'.join(torch.__version__.split('+')[0].split('.')[:2])
+    import metatensor.torch as metatensor_torch
+    import metatomic.torch as metatomic_torch
+    out.append(str(Path(metatensor_torch.__file__).resolve().parent / f'torch-{mm}' / 'lib' / 'cmake'))
+    out.append(str(Path(metatomic_torch.__file__).resolve().parent / f'torch-{mm}' / 'lib' / 'cmake'))
+except Exception:
+    pass
+try:
+    import sphericart
+    out.append(str(Path(sphericart.__file__).resolve().parent / 'lib' / 'cmake'))
+except Exception:
+    pass
 print(';'.join(out))"
             OUTPUT_VARIABLE _py_prefixes
             OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -84,7 +84,9 @@ function(openmm_metatomic_import_torch)
     execute_process(
         COMMAND ${Python3_EXECUTABLE} -c
             "from pathlib import Path
-import torch, metatensor_torch, metatomic_torch
+import torch
+import metatensor.torch as metatensor_torch
+import metatomic.torch as metatomic_torch
 mm = '.'.join(torch.__version__.split('+')[0].split('.')[:2])
 print(Path(torch.__file__).resolve().parent)
 print(Path(metatensor_torch.__file__).resolve().parent / f'torch-{mm}')

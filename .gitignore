@@ -45,3 +45,4 @@ models/hf-upet/
 models/pet-mad-extensions/
 models/error.log
 models/*.ckpt
+!models/soap-bpnn-tiny.ckpt

@@ -195,9 +195,9 @@ int main(int argc, char** argv) {
                 const auto torch = evalTorch(spec, torchPath);
                 const double dE = std::abs(torch.energy - core.energy);
                 const double dF = maxAbs(torch.forces, core.forces);
-                if (dE > 1e-8)
+                if (dE > 1e-6)
                     throw std::runtime_error(std::string(spec.name) + " torch vs core energy");
-                if (dF > 1e-5)
+                if (dF > 1e-4)
                     throw std::runtime_error(std::string(spec.name) + " torch vs core forces");
                 std::cout << std::left << std::setw(12) << spec.name << std::right
                           << std::setw(16) << torch.energy

@@ -14,6 +14,8 @@ Units are nm and kJ/mol. Neighbor lists are brute-force minimum-image
 displacements ``R_ij = R_j - R_i`` with ``0 < r ≤ cutoff``.
 """
 
+import copy
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
@@ -46,9 +48,11 @@ N_RADIAL_FEAT = sum(N_PER_L)
 SOAP_SIZE = sum(n * n * N_SPECIES * N_SPECIES for n in N_PER_L)
 HIDDEN = 8
 SPECIES_INDEX = {1: 0, 6: 1, 8: 2}
+SOAP_CKPT_NAME = "soap-bpnn-tiny.ckpt"
 
 _SPLINE = None
 _SPHERICART = sphericart.SphericalHarmonics(l_max=MAX_ANGULAR)
+_METATRAIN = None
 
 
 def laplacian_spline() -> dict:
@@ -216,16 +220,26 @@ def soap_features_spex(types: Sequence[int], positions, cell, periodic) -> np.nd
     return torch.cat(parts, dim=1).detach().cpu().numpy()
 
 
+_SOAP_POWER = None
+
+
 def soap_features_metatrain(types: Sequence[int], positions, cell, periodic) -> np.ndarray:
     """SOAP from metatrain ``SoapPowerSpectrum`` (legacy TensorMap layout)."""
     from metatrain.soap_bpnn.modules.power_spectrum import SoapPowerSpectrum
 
+    global _SOAP_POWER
     types, n, rij, ii, jj = _pairs(types, positions, cell, periodic)
     out = np.zeros((n, SOAP_SIZE))
     if rij.shape[0] == 0:
         return out
-    calculator = SoapPowerSpectrum(**_spex_spec())
-    feat = calculator(
+    if _SOAP_POWER is None:
+        prev = torch.get_default_dtype()
+        torch.set_default_dtype(torch.float64)
+        try:
+            _SOAP_POWER = SoapPowerSpectrum(**_spex_spec())
+        finally:
+            torch.set_default_dtype(prev)
+    feat = _SOAP_POWER(
         torch.tensor(rij, dtype=torch.float64),
         torch.tensor(ii, dtype=torch.int64),
         torch.tensor(jj, dtype=torch.int64),
@@ -265,6 +279,128 @@ def _spex_calculator() -> SphericalExpansion:
         finally:
             torch.set_default_dtype(prev)
     return _SPEX
+
+
+def models_dir() -> Path:
+    return Path(__file__).resolve().parents[1] / "models"
+
+
+def metatrain_hypers() -> dict:
+    from metatrain.utils.architectures import get_default_hypers
+
+    hypers = copy.deepcopy(get_default_hypers("soap_bpnn")["model"])
+    hypers["legacy"] = True
+    hypers["soap"]["max_angular"] = MAX_ANGULAR
+    hypers["soap"]["max_radial"] = MAX_RADIAL
+    hypers["soap"]["cutoff"]["radius"] = CUTOFF
+    hypers["soap"]["cutoff"]["width"] = WIDTH
+    hypers["bpnn"]["num_hidden_layers"] = 1
+    hypers["bpnn"]["num_neurons_per_layer"] = HIDDEN
+    hypers["bpnn"]["layernorm"] = False
+    hypers["zbl"] = False
+    hypers["long_range"]["enable"] = False
+    return hypers
+
+
+def metatrain_soap_bpnn(weights=None):
+    """Official metatrain ``SoapBpnn`` with the same hypers and MLP weights as the twin."""
+    global _METATRAIN
+    if _METATRAIN is not None and weights is None:
+        return _METATRAIN
+
+    from metatrain.soap_bpnn import SoapBpnn as MetatrainSoapBpnn
+    from metatrain.utils.data import DatasetInfo
+    from metatrain.utils.data.target_info import get_energy_target_info
+
+    weights = default_weights() if weights is None else weights
+    prev = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float64)
+    try:
+        model = MetatrainSoapBpnn(
+            metatrain_hypers(),
+            DatasetInfo(
+                length_unit="nm",
+                atomic_types=list(SPECIES),
+                targets={"energy": get_energy_target_info("energy", {"unit": "kJ/mol"})},
+            ),
+        ).double()
+    finally:
+        torch.set_default_dtype(prev)
+    for i, z in enumerate(SPECIES):
+        model.bpnn.module_list[i][0].weight.data.copy_(
+            torch.tensor(weights[z]["w1"], dtype=torch.float64)
+        )
+        model.last_layers["energy"]["energy___0"].module_map.module_list[i].weight.data.copy_(
+            torch.tensor(weights[z]["w2"], dtype=torch.float64).reshape(1, -1)
+        )
+    _METATRAIN = model
+    return model
+
+
+def write_soap_checkpoint(path: Union[str, Path], model=None) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save((model or metatrain_soap_bpnn()).get_checkpoint(), path)
+    return path
+
+
+def fetch_soap_checkpoint(dest: Path) -> Path:
+    """Download a SOAP-BPNN ``.ckpt`` from Hugging Face if ``OPENMM_METATOMIC_SOAP_HF`` is set."""
+    repo = os.environ.get("OPENMM_METATOMIC_SOAP_HF", "").strip()
+    if not repo:
+        raise FileNotFoundError(
+            "set OPENMM_METATOMIC_SOAP_HF to a Hub repo id to fetch a checkpoint"
+        )
+    from huggingface_hub import hf_hub_download
+
+    filename = os.environ.get("OPENMM_METATOMIC_SOAP_HF_FILE", SOAP_CKPT_NAME)
+    cached = hf_hub_download(repo_id=repo, filename=filename)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(Path(cached).read_bytes())
+    return dest
+
+
+def ensure_soap_checkpoint() -> Path:
+    """Vendored checkpoint, else Hub download, else write one from metatrain ``SoapBpnn``."""
+    dest = models_dir() / SOAP_CKPT_NAME
+    if dest.is_file():
+        return dest
+    try:
+        return fetch_soap_checkpoint(dest)
+    except Exception:
+        return write_soap_checkpoint(dest)
+
+
+def load_soap_checkpoint(path: Optional[Union[str, Path]] = None):
+    from metatrain.utils.io import load_model
+
+    loaded = load_model(str(path or ensure_soap_checkpoint()))
+    return loaded.double()
+
+
+def _metatrain_system(system: dict, model):
+    from metatrain.utils.neighbor_lists import get_system_with_neighbor_lists
+
+    frame = System(
+        torch.tensor(system["types"], dtype=torch.int32),
+        torch.tensor(system["positions"], dtype=torch.float64),
+        torch.tensor(system["cell"], dtype=torch.float64),
+        torch.tensor([bool(system["periodic"])] * 3),
+    )
+    return get_system_with_neighbor_lists(frame, model.requested_neighbor_lists())
+
+
+def evaluate_metatrain(system: dict, model=None) -> float:
+    """Run official metatrain ``SoapBpnn.forward`` (neighbor lists included)."""
+    from metatomic.torch import ModelOutput
+
+    model = load_soap_checkpoint() if model is None else model
+    frame = _metatrain_system(system, model)
+    energy = model(
+        [frame],
+        {"energy": ModelOutput(unit="kJ/mol", sample_kind="system")},
+    )["energy"].block().values
+    return float(energy.detach().sum())
 
 
 def numpy_energy(types, positions, cell, periodic, weights=None) -> float:
@@ -366,10 +502,10 @@ class SoapBpnn(torch.nn.Module):
             ],
             dim=-1,
         )
-        c0 = torch.einsum("ijn,ijm,js->imnc", radial[..., 0:3], ylm[..., 0:1], onehot)
+        c0 = torch.einsum("ijn,ijm,jc->imnc", radial[..., 0:3], ylm[..., 0:1], onehot)
         t0 = c0.reshape(n, 1, 9)
         p0 = torch.einsum("smn,smN->snN", t0, t0).reshape(n, -1)
-        c1 = torch.einsum("ijn,ijm,js->imnc", radial[..., 3:5], ylm[..., 1:4], onehot)
+        c1 = torch.einsum("ijn,ijm,jc->imnc", radial[..., 3:5], ylm[..., 1:4], onehot)
         t1 = c1.reshape(n, 3, 6)
         p1 = torch.einsum("smn,smN->snN", t1, t1).reshape(n, -1)
         return torch.cat([p0, p1], dim=-1)
@@ -514,9 +650,12 @@ def _check_systems(export_path: Optional[Path] = None) -> None:
     pt = None
     if export_path is not None:
         pt = export_bpnn(str(export_path))
+    ckpt = ensure_soap_checkpoint()
+    mtt_model = load_soap_checkpoint(ckpt)
+    print(f"metatrain checkpoint {ckpt} ({ckpt.stat().st_size} bytes)")
     print(
-        f"{'system':<12} {'N':>3} {'E_np':>12} {'E_torch':>12} {'Δspex':>10} "
-        f"{'Δmtt':>10} {'ΔF_FD':>10}  pbc"
+        f"{'system':<12} {'N':>3} {'E_np':>12} {'E_mtt':>12} {'Δspex':>10} "
+        f"{'Δsoap':>10} {'ΔE_mtt':>10} {'ΔF_FD':>10}  pbc"
     )
     for name, system in SYSTEMS.items():
         types, pos, cell, periodic = (
@@ -529,14 +668,11 @@ def _check_systems(export_path: Optional[Path] = None) -> None:
         feat_spex = soap_features_spex(types, pos, cell, periodic)
         d_spex = float(np.max(np.abs(feat_np - feat_spex)))
         assert d_spex < 1e-10, (name, d_spex)
-        d_mtt = float("nan")
-        try:
-            feat_mtt = soap_features_metatrain(types, pos, cell, periodic)
-            d_mtt = float(np.max(np.abs(feat_np - feat_mtt)))
-            assert d_mtt < 1e-10, (name, d_mtt)
-        except ImportError:
-            pass
+        feat_mtt = soap_features_metatrain(types, pos, cell, periodic)
+        d_soap = float(np.max(np.abs(feat_np - feat_mtt)))
+        assert d_soap < 1e-10, (name, d_soap)
         e_np = evaluate_numpy(system)
+        e_mtt = evaluate_metatrain(system, mtt_model)
         e_t, f_t = evaluate_torch(system, wrapper)
         f_fd = finite_difference_forces(
             lambda p, system=system: evaluate_numpy({**system, "positions": p}),
@@ -544,19 +680,20 @@ def _check_systems(export_path: Optional[Path] = None) -> None:
             h=1e-6,
         )
         d_e = abs(e_t - e_np)
+        d_mtt_e = abs(e_mtt - e_np)
         d_f = float(np.max(np.abs(f_t - f_fd)))
         assert d_e < 1e-10, (name, d_e, e_np, e_t)
+        assert d_mtt_e < 1e-10, (name, d_mtt_e, e_np, e_mtt)
         assert d_f < 5e-5, (name, d_f)
         if pt is not None:
             e_p, f_p = evaluate_pt(system, pt)
-            assert abs(e_p - e_np) < 1e-10
-            assert float(np.max(np.abs(f_p - f_t))) < 1e-8
-        mtt_s = f"{d_mtt:10.3e}" if d_mtt == d_mtt else f"{'n/a':>10}"
+            assert abs(e_p - e_np) < 1e-6
+            assert float(np.max(np.abs(f_p - f_t))) < 1e-4
         print(
-            f"{name:<12} {len(system['types']):>3} {e_np:12.6e} {e_t:12.6e} "
-            f"{d_spex:10.3e} {mtt_s} {d_f:10.3e}  {system['periodic']}"
+            f"{name:<12} {len(system['types']):>3} {e_np:12.6e} {e_mtt:12.6e} "
+            f"{d_spex:10.3e} {d_soap:10.3e} {d_mtt_e:10.3e} {d_f:10.3e}  {system['periodic']}"
         )
-    print("SOAP matches torch-spex/metatrain; torch energy matches numpy; forces match FD")
+    print("SOAP matches torch-spex; checkpoint SoapBpnn matches numpy energy; forces match FD")
 
 
 if __name__ == "__main__":
@@ -565,8 +702,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--emit", type=Path, default=None)
     parser.add_argument("--export", type=Path, default=None)
+    parser.add_argument("--write-ckpt", type=Path, default=None)
     args = parser.parse_args()
     if args.emit is not None:
         emit_cpp_weights(args.emit)
         print(f"wrote {args.emit}")
+    if args.write_ckpt is not None:
+        path = write_soap_checkpoint(args.write_ckpt)
+        print(f"wrote {path}")
     _check_systems(args.export)

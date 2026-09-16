@@ -12,3 +12,4 @@ vesin
 huggingface_hub
 sphericart
 torch-spex
+metatrain
