@@ -9,9 +9,11 @@ All notable changes to openmm-metatomic are documented here, following
 
 - GitHub Pages and a Docs workflow that builds the Sphinx gallery
   (<https://ericboittier.github.io/openmm-metatomic/>).
-- SOAP-BPNN twin of metatrain `soap_bpnn` (legacy path): SOAP power spectrum
-  plus a per-species SiLU MLP in metatomic-core C++, checked against a
-  matching TorchScript export. `./build/openmm-metatomic-bpnn build/soap-bpnn.pt`
+- SOAP-BPNN twin of metatrain `soap_bpnn` (legacy path): torch-spex Laplacian
+  eigenstates + sphericart spherical harmonics + `SoapPowerSpectrum` contraction,
+  then a per-species SiLU MLP. Core C++ uses sphericart and the dumped spline;
+  checked against torch-spex, metatrain, and a matching TorchScript export.
+  `./build/openmm-metatomic-bpnn build/soap-bpnn.pt`
 
 ### Timing baseline (2026-09-16)
 

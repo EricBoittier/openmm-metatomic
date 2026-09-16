@@ -8,7 +8,8 @@ The gallery covers three layers:
    an eight-atom carbon cube, and periodic water. **core**
    (``metatomic::execute_model``) and **torch** (``.pt`` /
    ``load_atomistic_model``).
-2. **SOAP-BPNN** — metatrain ``soap_bpnn``-style SOAP power spectrum plus a
+2. **SOAP-BPNN** — metatrain ``soap_bpnn`` SOAP (torch-spex Laplacian
+   eigenstates, sphericart spherical harmonics, power spectrum) plus a
    per-species SiLU MLP, implemented in metatomic-core C++ and as a matching
    TorchScript module.
 3. **PET-MAD** — the vendored extra-small v1.5.0 TorchScript file from

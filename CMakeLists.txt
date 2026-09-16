@@ -31,15 +31,20 @@ try:
     out.append(str(Path(metatensor.__file__).resolve().parent / 'lib' / 'cmake'))
 except Exception:
     pass
-try:
-    import torch
-    out.append(torch.utils.cmake_prefix_path)
-    mm = '.'.join(torch.__version__.split('+')[0].split('.')[:2])
-    import metatensor_torch, metatomic_torch
-    out.append(str(Path(metatensor_torch.__file__).resolve().parent / f'torch-{mm}' / 'lib' / 'cmake'))
-    out.append(str(Path(metatomic_torch.__file__).resolve().parent / f'torch-{mm}' / 'lib' / 'cmake'))
-except Exception:
-    pass
+        try:
+            import torch
+            out.append(torch.utils.cmake_prefix_path)
+            mm = '.'.join(torch.__version__.split('+')[0].split('.')[:2])
+            import metatensor_torch, metatomic_torch
+            out.append(str(Path(metatensor_torch.__file__).resolve().parent / f'torch-{mm}' / 'lib' / 'cmake'))
+            out.append(str(Path(metatomic_torch.__file__).resolve().parent / f'torch-{mm}' / 'lib' / 'cmake'))
+        except Exception:
+            pass
+        try:
+            import sphericart
+            out.append(str(Path(sphericart.__file__).resolve().parent / 'lib' / 'cmake'))
+        except Exception:
+            pass
 print(';'.join(out))"
             OUTPUT_VARIABLE _py_prefixes
             OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -166,11 +171,43 @@ if(OPENMM_METATOMIC_TORCH AND Python3_EXECUTABLE)
     add_custom_target(harmonic-pt ALL DEPENDS ${HARMONIC_PT})
 endif()
 
+if(Python3_EXECUTABLE)
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE} -c
+            "from pathlib import Path
+import sphericart
+root = Path(sphericart.__file__).resolve().parent
+print(root / 'include')
+print(root / 'lib' / 'libsphericart.so')"
+        OUTPUT_VARIABLE _sphericart_paths
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+endif()
+if(_sphericart_paths)
+    string(REPLACE "\n" ";" _sphericart_paths "${_sphericart_paths}")
+    list(GET _sphericart_paths 0 SPHERICART_INCLUDE_DIR)
+    list(GET _sphericart_paths 1 SPHERICART_LIBRARY)
+    add_library(sphericart SHARED IMPORTED)
+    set_target_properties(sphericart PROPERTIES
+        IMPORTED_LOCATION "${SPHERICART_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${SPHERICART_INCLUDE_DIR}"
+    )
+    get_filename_component(SPHERICART_LIBDIR "${SPHERICART_LIBRARY}" DIRECTORY)
+    message(STATUS "Imported sphericart from ${SPHERICART_LIBRARY}")
+endif()
+
 add_executable(openmm-metatomic-bpnn spike/evaluate_bpnn.cpp)
 target_include_directories(openmm-metatomic-bpnn PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/openmmapi/include
 )
 target_link_libraries(openmm-metatomic-bpnn PRIVATE metatomic::shared)
+if(TARGET sphericart)
+    target_link_libraries(openmm-metatomic-bpnn PRIVATE sphericart)
+    set_property(TARGET openmm-metatomic-bpnn APPEND PROPERTY BUILD_RPATH "${SPHERICART_LIBDIR}")
+else()
+    message(FATAL_ERROR "sphericart C++ library not found (pip install sphericart)")
+endif()
 if(_mta_loc)
     set_property(TARGET openmm-metatomic-bpnn APPEND PROPERTY BUILD_RPATH "${_mta_libdir}")
 endif()

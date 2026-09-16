@@ -17,7 +17,7 @@ Backends
 ``setBackend("auto")`` selects torch for ``.pt`` / ``.pth`` and core otherwise.
 
 The gallery includes **PET-MAD-XS** (`lab-cosmo/upet`_) and a **SOAP-BPNN**
-twin of metatrain ``soap_bpnn`` (SOAP power spectrum + per-species SiLU MLP)
+twin of metatrain ``soap_bpnn`` (torch-spex SOAP + per-species SiLU MLP)
 run in both metatomic-core C++ and TorchScript.
 
 .. _lab-cosmo/upet: https://huggingface.co/lab-cosmo/upet
