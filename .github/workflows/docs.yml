@@ -1,0 +1,70 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: docs-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MPLBACKEND: Agg
+      OPENMM_METATOMIC_ROOT: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install docs dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          grep -vE '^torch$' docs/requirements.txt > /tmp/docs-req.txt
+          python -m pip install -r /tmp/docs-req.txt
+          python -m pip install "openmmml @ git+https://github.com/EricBoittier/openmm-ml.git"
+
+      - name: OpenMM-ML test data
+        run: |
+          git clone --depth 1 https://github.com/EricBoittier/openmm-ml.git /tmp/openmm-ml
+          echo "OPENMM_ML_TEST_DATA=/tmp/openmm-ml/test/data" >> "$GITHUB_ENV"
+
+      - name: Build HTML
+        run: make -C docs html
+
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          path: docs/_build/html
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+        with:
+          name: docs-html
+          path: docs/_build/html
+          retention-days: 7
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

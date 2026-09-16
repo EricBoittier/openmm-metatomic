@@ -60,12 +60,14 @@ numbers through `load_atomistic_model`.
 
 ## Examples
 
-A Sphinx gallery lives in `examples/`::
+A Sphinx gallery lives in `examples/`. Built HTML is at
+<https://ericboittier.github.io/openmm-metatomic/>.
 
-    python3.14 -m pip install -r docs/requirements.txt
-    make -C docs html
-    # output: docs/_build/html/index.html
-
+```bash
+python3.14 -m pip install -r docs/requirements.txt
+make -C docs html
+# output: docs/_build/html/index.html
+```
 PET-MAD-XS is a first-class example (`examples/plot_05_petmad.py`). The
 repo vendors `models/pet-mad-xs-v1.5.0.pt` (~20 MB) from
 [lab-cosmo/upet](https://huggingface.co/lab-cosmo/upet). See

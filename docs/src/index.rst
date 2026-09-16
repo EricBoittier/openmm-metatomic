@@ -23,7 +23,10 @@ ML region of toluene in explicit solvent.
 
 .. _lab-cosmo/upet: https://huggingface.co/lab-cosmo/upet
 
+Built HTML is at https://ericboittier.github.io/openmm-metatomic/ .
+
 .. toctree::
    :maxdepth: 2
 
    examples/index
+

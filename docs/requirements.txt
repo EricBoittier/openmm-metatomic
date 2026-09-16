@@ -7,5 +7,6 @@ numpy
 torch
 metatomic-torch
 metatensor-torch
-openmm>=8.2
+openmm>=8.5
+vesin
 huggingface_hub
