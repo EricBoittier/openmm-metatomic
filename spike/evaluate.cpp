@@ -5,7 +5,9 @@
 #include "openmmmetatomic/internal/HarmonicModel.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <stdexcept>
@@ -209,6 +211,28 @@ int runCore(const std::vector<DemoSystem>& systems) {
     return 0;
 }
 
+int runCoreBench(const std::vector<DemoSystem>& systems, int steps) {
+    std::cout << "\n== metatomic-core bench (" << steps << " evals) ==\n";
+    for (const auto& spec : systems) {
+        auto raw = metatomic::BaseModel::to_mta_model(
+            std::make_unique<HarmonicModel>(kSpring, spec.rest)
+        );
+        metatomic::ExternalModel model(raw);
+        forcesAt(model, spec);
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < steps; i++)
+            forcesAt(model, spec);
+        const auto ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t0
+        ).count();
+        std::cout << "bench-core  " << spec.name
+                  << "  atoms=" << spec.types.size()
+                  << "  " << std::setprecision(4) << (ms / steps)
+                  << " ms/eval\n";
+    }
+    return 0;
+}
+
 #ifdef OPENMM_METATOMIC_TORCH
 torch::Device selectDevice(const std::vector<std::string>& supported, const std::string& desired) {
     torch::optional<std::string> requested = torch::nullopt;
@@ -285,11 +309,33 @@ int runTorch(const DemoSystem& spec, const std::string& path) {
 
 int main(int argc, char** argv) {
     try {
+        int benchSteps = 0;
+        std::string torchPath;
+        for (int i = 1; i < argc; i++) {
+            const std::string arg = argv[i];
+            if (arg == "--bench") {
+                benchSteps = (i + 1 < argc) ? std::stoi(argv[++i]) : 100;
+                continue;
+            }
+            torchPath = arg;
+        }
+
         const auto systems = demoSystems();
         runCore(systems);
-        if (argc > 1) {
+        if (benchSteps > 0)
+            runCoreBench(systems, benchSteps);
+
+        if (!torchPath.empty()) {
 #ifdef OPENMM_METATOMIC_TORCH
-            runTorch(systems.front(), argv[1]);
+            if (std::filesystem::is_directory(torchPath)) {
+                for (const auto& spec : systems) {
+                    const auto model = std::filesystem::path(torchPath)
+                        / (std::string(spec.name) + ".pt");
+                    runTorch(spec, model.string());
+                }
+            } else {
+                runTorch(systems.front(), torchPath);
+            }
 #else
             std::cerr << "TorchScript backend was not compiled (OPENMM_METATOMIC_TORCH=OFF)\n";
             return 1;

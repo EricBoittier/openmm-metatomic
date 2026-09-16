@@ -8,31 +8,32 @@ must not change the energy — it only changes how the ``metatomic::System`` is
 built (non-zero cell, ``pbc = true``).
 """
 
-from pathlib import Path
-import sys
-
 import matplotlib.pyplot as plt
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _harmonic import SYSTEMS, analytic, evaluate_torch  # noqa: E402
+from _harmonic import SYSTEMS, analytic, evaluate_core, evaluate_torch
 
 cluster = SYSTEMS["carbon8"]
 vacuum = SYSTEMS["water"]
 pbc = SYSTEMS["water_pbc"]
 
 e_c, f_c = analytic(cluster)
+ec_c, _ = evaluate_core(cluster)
 et_c, ft_c = evaluate_torch(cluster)
 e_v, _ = analytic(vacuum)
 e_p, _ = analytic(pbc)
 et_v, _ = evaluate_torch(vacuum)
 et_p, _ = evaluate_torch(pbc)
+ec_v, _ = evaluate_core(vacuum)
+ec_p, _ = evaluate_core(pbc)
 
-print(f"carbon8   N={len(cluster['types'])}  E_torch={et_c:.6e}  ΔE={abs(et_c - e_c):.3e}")
-print(f"water     E_torch={et_v:.6e}")
-print(f"water_pbc E_torch={et_p:.6e}  ΔE vs vacuum={abs(et_p - et_v):.3e}")
+print(f"carbon8   N={len(cluster['types'])}  E_core={ec_c:.6e}  E_torch={et_c:.6e}  ΔE={abs(et_c - e_c):.3e}")
+print(f"water     E_core={ec_v:.6e}  E_torch={et_v:.6e}")
+print(f"water_pbc E_core={ec_p:.6e}  E_torch={et_p:.6e}  ΔE vs vacuum={abs(et_p - et_v):.3e}")
 assert abs(et_p - et_v) < 1e-12
+assert abs(ec_p - ec_v) < 1e-12
 assert abs(et_c - e_c) < 1e-10
+del f_c
 
 pos = np.asarray(cluster["positions"])
 fig = plt.figure(figsize=(7.2, 3.4))

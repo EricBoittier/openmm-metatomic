@@ -66,6 +66,12 @@ A Sphinx gallery lives in `examples/`::
     make -C docs html
     # output: docs/_build/html/index.html
 
+PET-MAD-XS is a first-class example (`examples/plot_05_petmad.py`). It
+downloads `lab-cosmo/upet` `models/pet-mad-xs-v1.5.0.ckpt` from Hugging Face,
+converts it with `mtt export`, and also writes the packaged TorchScript file
+via `upet.save_upet`. See [models/README.md](models/README.md). Conversion
+needs metatrain **2026.3.1 or 2026.4** — the 2026.5.dev dipole-head change
+cannot load this checkpoint.
 
 ## Build
 

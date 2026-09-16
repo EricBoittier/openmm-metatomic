@@ -1,6 +1,16 @@
 Examples
 ========
 
-The M0 spike evaluates a conservative harmonic well on small OpenMM-sized
-systems (nm, kJ/mol) through both the **metatomic-core** C++ API and the
-**TorchScript** back-compat path.
+The gallery covers three layers:
+
+1. **M0 spike** — conservative harmonic well
+   :math:`E = \tfrac{1}{2} k \sum_i \|r_i - r_{0,i}\|^2` on water, methane, CO2,
+   an eight-atom carbon cube, and periodic water. **core**
+   (``metatomic::execute_model``) and **torch** (``.pt`` /
+   ``load_atomistic_model``).
+2. **PET-MAD** — download ``lab-cosmo/upet`` from Hugging Face, convert the
+   checkpoint with ``mtt export``, and run the extra-small v1.5.0 model through
+   OpenMM-ML (pure ML water, toluene, and toluene-in-water ML/MM).
+3. **OpenMM-ML setups and timings** — ``createSystem``, ``createMixedSystem``
+   (including λ interpolation), and wall-clock cost of setup vs evaluation vs
+   short Langevin MD on CPU, Reference, Torch CUDA, and the C++ spike.

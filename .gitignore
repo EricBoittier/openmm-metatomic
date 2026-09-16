@@ -40,3 +40,9 @@ tests/*.pt
 # Docs
 docs/_build/
 docs/src/examples/
+
+# Downloaded / converted models
+models/hf-upet/
+models/pet-mad-extensions/
+models/error.log
+models/*.ckpt

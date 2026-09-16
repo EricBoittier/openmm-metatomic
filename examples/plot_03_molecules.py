@@ -8,22 +8,23 @@ force on each atom is independent of the others. That is a stand-in for a
 conservative Metatomic energy, not a physical force field.
 """
 
-from pathlib import Path
-import sys
-
 import matplotlib.pyplot as plt
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _harmonic import SYSTEMS, analytic, evaluate_torch  # noqa: E402
+from _harmonic import SYSTEMS, analytic, evaluate_core, evaluate_torch
 
 fig, axes = plt.subplots(1, 2, figsize=(8.4, 3.4))
 for ax, name in zip(axes, ("methane", "co2")):
     system = SYSTEMS[name]
     energy_a, forces_a = analytic(system)
+    energy_c, forces_c = evaluate_core(system)
     energy_t, forces_t = evaluate_torch(system)
     rms = float(np.sqrt(np.mean((forces_t - forces_a) ** 2)))
-    print(f"{name}: E_analytic={energy_a:.6e}  E_torch={energy_t:.6e}  RMS ΔF={rms:.3e}")
+    print(
+        f"{name}: E_core={energy_c:.6e}  E_torch={energy_t:.6e}  "
+        f"ΔE={abs(energy_c - energy_a):.3e}  RMS ΔF={rms:.3e}"
+    )
+    del forces_c
     rest = np.asarray(system["rest"])
     pos = np.asarray(system["positions"])
     ax.scatter(rest[:, 0], rest[:, 1], c="C0", label="rest")

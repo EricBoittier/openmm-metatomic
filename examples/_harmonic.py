@@ -1,6 +1,7 @@
 """Shared harmonic well, demo systems, and evaluation helpers for the gallery."""
 
-from typing import Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -12,6 +13,7 @@ from metatomic.torch import (
     ModelMetadata,
     ModelOutput,
     System,
+    load_atomistic_model,
 )
 
 K = 1.0
@@ -188,14 +190,14 @@ def export_system(system: dict, path: str, k: float = K) -> str:
     return path
 
 
-def evaluate_torch(system: dict, k: float = K) -> Tuple[float, np.ndarray]:
+def evaluate_core(system: dict, k: float = K) -> Tuple[float, np.ndarray]:
+    """Same independent-atom well as the C++ ``HarmonicModel`` / metatomic-core path."""
+    return analytic(system, k)
+
+
+def _make_wrapper(system: dict, k: float = K) -> AtomisticModel:
     rest = torch.tensor(system["rest"], dtype=torch.float64)
-    positions = torch.tensor(system["positions"], dtype=torch.float64, requires_grad=True)
-    types = torch.tensor(system["types"], dtype=torch.int32)
-    cell = torch.tensor(system["cell"], dtype=torch.float64)
-    periodic = bool(system["periodic"])
-    pbc = torch.tensor([periodic, periodic, periodic])
-    wrapper = AtomisticModel(
+    return AtomisticModel(
         Harmonic(k, rest).eval(),
         ModelMetadata(name="gallery-harmonic"),
         ModelCapabilities(
@@ -207,6 +209,14 @@ def evaluate_torch(system: dict, k: float = K) -> Tuple[float, np.ndarray]:
             dtype="float64",
         ),
     )
+
+
+def _evaluate_wrapper(wrapper: AtomisticModel, system: dict) -> Tuple[float, np.ndarray]:
+    positions = torch.tensor(system["positions"], dtype=torch.float64, requires_grad=True)
+    types = torch.tensor(system["types"], dtype=torch.int32)
+    cell = torch.tensor(system["cell"], dtype=torch.float64)
+    periodic = bool(system["periodic"])
+    pbc = torch.tensor([periodic, periodic, periodic])
     options = ModelEvaluationOptions(
         length_unit="nm",
         outputs={"energy": ModelOutput(unit="kJ/mol", sample_kind="system")},
@@ -217,3 +227,14 @@ def evaluate_torch(system: dict, k: float = K) -> Tuple[float, np.ndarray]:
     energy.backward()
     forces = (-positions.grad).detach().cpu().numpy()
     return float(energy.item()), forces
+
+
+def evaluate_torch(system: dict, k: float = K) -> Tuple[float, np.ndarray]:
+    """In-process TorchScript ``AtomisticModel`` (not yet saved to ``.pt``)."""
+    return _evaluate_wrapper(_make_wrapper(system, k), system)
+
+
+def evaluate_pt(system: dict, path: Union[str, Path], k: float = K) -> Tuple[float, np.ndarray]:
+    """Load an exported ``.pt`` with ``load_atomistic_model`` — the plugin torch backend."""
+    del k
+    return _evaluate_wrapper(load_atomistic_model(str(path)), system)

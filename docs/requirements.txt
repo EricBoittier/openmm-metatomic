@@ -7,3 +7,5 @@ numpy
 torch
 metatomic-torch
 metatensor-torch
+openmm>=8.2
+huggingface_hub

@@ -1,9 +1,19 @@
 import os
+import sys
 from datetime import datetime
 
 from sphinx_gallery.sorting import FileNameSortKey
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+sys.path.insert(0, os.path.join(ROOT, "examples"))
+os.environ.setdefault("OPENMM_METATOMIC_ROOT", ROOT)
+_mtt = (
+    "/home/ericb/metawork/atomistic-cookbook/examples/"
+    "metatomic-hourglass/.hourglass-env/bin/mtt"
+)
+if os.path.isfile(_mtt):
+    os.environ.setdefault("OPENMM_METATOMIC_MTT", _mtt)
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 project = "openmm-metatomic"
 author = "Eric D. Boittier"
@@ -17,8 +27,7 @@ extensions = [
     "sphinx_copybutton",
 ]
 
-templates_path = ["_templates"]
-exclude_patterns = ["_build"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "furo"
 html_title = "OpenMM-Metatomic"
@@ -36,13 +45,12 @@ sphinx_gallery_conf = {
     "gallery_dirs": os.path.join(ROOT, "docs", "src", "examples"),
     "filename_pattern": r"plot_",
     "ignore_pattern": r"^_|README",
+    "copyfile_regex": r"_harmonic\.py|_openmm\.py|_petmad\.py",
     "within_subsection_order": FileNameSortKey,
     "remove_config_comments": True,
     "matplotlib_animations": False,
-    "reset_modules_order": "both",
     "backreferences_dir": None,
     "download_all_examples": False,
     "plot_gallery": True,
+    "min_reported_time": 1,
 }
-
-os.environ.setdefault("MPLBACKEND", "Agg")
