@@ -47,8 +47,7 @@ from _petmad import (
     WATER_NM,
     WATER_NUMBERS,
     WATER_SYMBOLS,
-    converted_pt,
-    ensure_models,
+    ensure_model,
     evaluate_exported,
 )
 
@@ -220,12 +219,10 @@ with tempfile.TemporaryDirectory() as tmp:
 
 # PET-MAD-XS: real Hub model, fewer repeats because each call is a foundation-model eval.
 try:
-    _, pet_pt, _ = ensure_models()
+    pet_pt = ensure_model()
 except Exception as exc:
-    pet_pt = converted_pt()
-    if not pet_pt.is_file():
-        print(f"PET-MAD skipped: {exc}")
-        pet_pt = None
+    print(f"PET-MAD skipped: {exc}")
+    pet_pt = None
 if pet_pt is not None and pet_pt.is_file():
     pet_top = vacuum_topology(WATER_SYMBOLS)
     pet_pos = WATER_NM * unit.nanometers

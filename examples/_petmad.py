@@ -44,12 +44,21 @@ def checkpoint_path() -> Path:
     return models_dir() / "hf-upet" / CKPT_REL
 
 
-def converted_pt() -> Path:
-    return models_dir() / f"pet-mad-{SIZE}-v{VERSION}.converted.pt"
-
-
 def official_pt() -> Path:
     return models_dir() / f"pet-mad-{SIZE}-v{VERSION}.pt"
+
+
+def ensure_model() -> Path:
+    """Vendored TorchScript, or rebuild from Hugging Face if it is missing."""
+    path = official_pt()
+    if path.is_file():
+        return path
+    try:
+        return save_official_pt(path)
+    except Exception as exc:
+        print(f"upet.save_upet unavailable ({exc}); trying mtt export")
+    ckpt = download_checkpoint()
+    return convert_checkpoint(ckpt, path)
 
 
 def download_checkpoint() -> Path:
@@ -145,20 +154,9 @@ def save_official_pt(output: Path) -> Path:
         )
         return output
     raise ImportError(
-        "upet is not installed; pip install upet, or set OPENMM_METATOMIC_MTT "
-        "and rely on the converted .pt only"
+        "upet is not installed; pip install upet, or place "
+        f"{official_pt().name} in models/"
     )
-
-
-def ensure_models() -> Tuple[Path, Path, Path]:
-    ckpt = download_checkpoint()
-    converted = convert_checkpoint(ckpt, converted_pt())
-    try:
-        official = save_official_pt(official_pt())
-    except Exception as exc:
-        print(f"official upet.save_upet skipped: {exc}")
-        official = converted
-    return ckpt, converted, official
 
 
 _LOADED = {}

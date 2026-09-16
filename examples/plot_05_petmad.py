@@ -3,21 +3,15 @@ PET-MAD from Hugging Face
 =========================
 
 `PET-MAD <https://arxiv.org/abs/2503.14118>`_ is a universal potential trained
-on the MAD dataset. Checkpoints live on the Hub
-(`lab-cosmo/upet <https://huggingface.co/lab-cosmo/upet>`_); the file OpenMM
-loads is an exported TorchScript ``.pt``.
+on the MAD dataset. This repo vendors the extra-small v1.5.0 TorchScript
+export (`models/pet-mad-xs-v1.5.0.pt`, ~20 MB) produced from
+`lab-cosmo/upet <https://huggingface.co/lab-cosmo/upet>`_. Larger S/M
+checkpoints stay on the Hub.
 
-This example does both Hub steps a user actually runs:
-
-1. ``hf download lab-cosmo/upet models/pet-mad-xs-v1.5.0.ckpt``
-2. ``mtt export`` that checkpoint to TorchScript
-3. ``upet.save_upet`` — the packaged Hugging Face → ``.pt`` path
-
-then evaluates water (and toluene, if the OpenMM-ML test PDB is present)
-through ``MLPotential("metatomic")``, the current OpenMM end-user API.
-CPU and CUDA are compared when a GPU is visible. A short NVE run checks
-the ``PythonForce`` survives repeated ``getState`` calls, not just one
-energy.
+The file OpenMM loads is that ``.pt``. This example runs it through
+``MLPotential("metatomic")`` on water (CPU and CUDA), a short NVE trajectory,
+and — when the OpenMM-ML test data is present — toluene in vacuum and as the
+ML region of toluene in explicit solvent.
 """
 
 import matplotlib.pyplot as plt
@@ -38,28 +32,20 @@ from _petmad import (
     WATER_NM,
     WATER_NUMBERS,
     WATER_SYMBOLS,
+    ensure_model,
     evaluate_exported,
-    ensure_models,
 )
 
-ckpt, converted, official = ensure_models()
-print(f"checkpoint  {ckpt}")
-print(f"converted   {converted}  ({converted.stat().st_size / 1e6:.1f} MB)")
-print(f"official pt {official}  ({official.stat().st_size / 1e6:.1f} MB)")
+model_path = ensure_model()
+print(f"model {model_path}  ({model_path.stat().st_size / 1e6:.1f} MB)")
 
 pos_ang = WATER_NM * 10.0
 devices = ["cpu"] + (["cuda"] if torch.cuda.is_available() else [])
 print(f"torch devices: {devices}")
 
-rows = []
-for label, path in (("converted", converted), ("official", official)):
-    energy, forces = evaluate_exported(str(path), WATER_NUMBERS, pos_ang, device="cpu")
-    rows.append((label, "direct/cpu", energy, float(np.linalg.norm(forces))))
-    print(f"{label:10} direct/cpu  E={energy:12.6f} kJ/mol  |F|={np.linalg.norm(forces):.4f}")
-
-dE = abs(rows[0][2] - rows[1][2])
-print(f"ΔE converted vs official pt: {dE:.4e} kJ/mol")
-assert np.isfinite(rows[0][2]) and np.isfinite(rows[1][2])
+energy_ref, forces_ref = evaluate_exported(str(model_path), WATER_NUMBERS, pos_ang, device="cpu")
+print(f"direct/cpu  E={energy_ref:12.6f} kJ/mol  |F|={np.linalg.norm(forces_ref):.4f}")
+assert np.isfinite(energy_ref)
 
 topology = vacuum_topology(WATER_SYMBOLS)
 platform = preferred_platforms()[0]
@@ -67,7 +53,7 @@ print(f"OpenMM platform {platform.getName()}")
 
 openmm_rows = []
 for device in devices:
-    potential = make_potential(str(converted), device=device)
+    potential = make_potential(str(model_path), device=device)
     system = potential.createSystem(topology)
     integrator = mm.VerletIntegrator(0.0005 * unit.picoseconds)
     context = mm.Context(system, integrator, platform)
@@ -75,15 +61,12 @@ for device in devices:
     energy, forces = energy_forces(context)
     openmm_rows.append((device, energy, forces))
     print(f"OpenMM-ML/{device:<4}  E={energy:12.6f} kJ/mol  |F|={np.linalg.norm(forces):.4f}")
-    assert np.isclose(energy, rows[0][2], rtol=1e-4, atol=5e-2)
+    assert np.isclose(energy, energy_ref, rtol=1e-4, atol=5e-2)
 
 if len(openmm_rows) == 2:
-    print(
-        f"ΔE cpu vs cuda: {abs(openmm_rows[0][1] - openmm_rows[1][1]):.4e} kJ/mol"
-    )
+    print(f"ΔE cpu vs cuda: {abs(openmm_rows[0][1] - openmm_rows[1][1]):.4e} kJ/mol")
 
-# Short NVE on the CPU OpenMM path — same pattern as production ML MD.
-potential = make_potential(str(converted), device="cpu")
+potential = make_potential(str(model_path), device="cpu")
 system = potential.createSystem(topology)
 integrator = mm.VerletIntegrator(0.0005 * unit.picoseconds)
 simulation = app.Simulation(topology, system, integrator, platform)
@@ -105,13 +88,12 @@ print(
 )
 assert np.all(np.isfinite(totals))
 
-# Toluene vacuum + ML/MM (ligand internals PET-MAD, solvent Amber) when test data exists.
 data = openmm_ml_data()
 if data is not None:
     pdb = app.PDBFile(str(data / "toluene" / "toluene.pdb"))
     numbers = [atom.element.atomic_number for atom in pdb.topology.atoms()]
     pos = pdb.getPositions(asNumpy=True)
-    pot = make_potential(str(converted), device="cpu")
+    pot = make_potential(str(model_path), device="cpu")
     vacuum = pot.createSystem(pdb.topology)
     ctx = mm.Context(vacuum, mm.VerletIntegrator(0.0005), platform)
     ctx.setPositions(pos)
@@ -136,14 +118,11 @@ if data is not None:
         )
 
 fig, axes = plt.subplots(1, 2, figsize=(8.4, 3.4))
-axes[0].bar(
-    [r[0] + "\n" + r[1] for r in rows] + [f"OpenMM\n{d}" for d, _, _ in openmm_rows],
-    [r[2] for r in rows] + [e for _, e, _ in openmm_rows],
-    color=["C0", "C0"] + ["C1"] * len(openmm_rows),
-)
+labels = ["direct/cpu"] + [f"OpenMM\n{d}" for d, _, _ in openmm_rows]
+values = [energy_ref] + [e for _, e, _ in openmm_rows]
+axes[0].bar(labels, values, color=["C0"] + ["C1"] * len(openmm_rows))
 axes[0].set_ylabel("E / kJ mol$^{-1}$")
 axes[0].set_title("Water, PET-MAD-XS v1.5.0")
-axes[0].tick_params(axis="x", rotation=15)
 axes[1].plot(np.arange(len(totals)) * 0.5, totals, color="C2")
 axes[1].set_xlabel("t / fs")
 axes[1].set_ylabel("E$_\\mathrm{tot}$ / kJ mol$^{-1}$")
