@@ -88,4 +88,5 @@ cmake --build build
 ## Status
 
 Milestone 0: standalone C++ spike on metatomic-core, with TorchScript
-back-compat. See [ROADMAP.md](ROADMAP.md).
+back-compat. See [ROADMAP.md](ROADMAP.md). Timing baseline (2026-09-16) is in
+[CHANGELOG.md](CHANGELOG.md).
