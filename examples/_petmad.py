@@ -161,6 +161,9 @@ def ensure_models() -> Tuple[Path, Path, Path]:
     return ckpt, converted, official
 
 
+_LOADED = {}
+
+
 def evaluate_exported(
     model_path: str,
     numbers: Sequence[int],
@@ -172,13 +175,27 @@ def evaluate_exported(
     """Energy (kJ/mol) and forces (kJ/mol/nm) with vesin neighbor lists."""
     import vesin.metatomic
 
-    model = load_atomistic_model(model_path)
-    capabilities = model.capabilities()
-    desired = device
-    torch_device = torch.device(pick_device(capabilities.supported_devices, desired))
-    dtype = getattr(torch, capabilities.dtype)
-    model = model.to(device=torch_device)
-    energy_key = pick_output("energy", capabilities.outputs, None)
+    key = (model_path, device, bool(periodic))
+    cached = _LOADED.get(key)
+    if cached is None:
+        model = load_atomistic_model(model_path)
+        capabilities = model.capabilities()
+        torch_device = torch.device(pick_device(capabilities.supported_devices, device))
+        dtype = getattr(torch, capabilities.dtype)
+        model = model.to(device=torch_device)
+        energy_key = pick_output("energy", capabilities.outputs, None)
+        neighbor_lists = [
+            vesin.metatomic.NeighborList(
+                options=nl,
+                length_unit="angstrom",
+                check_consistency=False,
+                skin=2.0,
+            )
+            for nl in model.requested_neighbor_lists()
+        ]
+        cached = (model, torch_device, dtype, energy_key, neighbor_lists)
+        _LOADED[key] = cached
+    model, torch_device, dtype, energy_key, neighbor_lists = cached
     types = torch.tensor(list(numbers), dtype=torch.int32, device=torch_device)
     pos = torch.tensor(
         np.asarray(positions_angstrom, dtype=np.float64),
@@ -197,15 +214,6 @@ def evaluate_exported(
     )
     energy_scale = float(unit_conversion_factor("eV", "kJ/mol"))
     system = System(types, pos, cell, pbc)
-    neighbor_lists = [
-        vesin.metatomic.NeighborList(
-            options=nl,
-            length_unit="angstrom",
-            check_consistency=False,
-            skin=2.0,
-        )
-        for nl in model.requested_neighbor_lists()
-    ]
     if neighbor_lists:
         work = system if system.device.type in ("cpu", "cuda") else system.to(device="cpu")
         for neighbors in neighbor_lists:
