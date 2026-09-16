@@ -2,6 +2,7 @@
 #define OPENMM_METATOMIC_HARMONIC_MODEL_H_
 
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>

@@ -10,8 +10,10 @@
 #undef DIM
 #endif
 
+#include <array>
 #include <cmath>
 #include <filesystem>
+#include <memory>
 #include <sstream>
 #include <unordered_set>
 

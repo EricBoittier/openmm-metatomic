@@ -10,6 +10,14 @@ set(OPENMM_DIR "" CACHE PATH "OpenMM install prefix (headers + libOpenMM)")
 
 find_package(Python3 COMPONENTS Interpreter)
 
+if(NOT Python3_EXECUTABLE OR Python3_VERSION VERSION_GREATER_EQUAL 3.15)
+    find_program(_py314 python3.14)
+    if(_py314)
+        set(Python3_EXECUTABLE ${_py314})
+        message(STATUS "Using Python3_EXECUTABLE=${Python3_EXECUTABLE}")
+    endif()
+endif()
+
 function(openmm_metatomic_detect_prefixes)
     set(_prefixes "")
     if(Python3_EXECUTABLE)
@@ -41,10 +49,17 @@ print(';'.join(out))"
             list(APPEND _prefixes ${_py_prefixes})
         endif()
     endif()
+    file(GLOB _local_mta_314
+        "${CMAKE_CURRENT_SOURCE_DIR}/../metatomic/python/metatomic_core/build/lib.*314*/metatomic/lib/cmake"
+    )
     file(GLOB _local_mta
         "${CMAKE_CURRENT_SOURCE_DIR}/../metatomic/python/metatomic_core/build/lib.*/metatomic/lib/cmake"
     )
-    list(APPEND _prefixes ${_local_mta})
+    if(_local_mta_314)
+        list(APPEND _prefixes ${_local_mta_314})
+    else()
+        list(APPEND _prefixes ${_local_mta})
+    endif()
     if(_prefixes)
         list(PREPEND CMAKE_PREFIX_PATH ${_prefixes})
         set(CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH}" PARENT_SCOPE)
@@ -58,7 +73,13 @@ find_package(metatensor 0.2.4 CONFIG REQUIRED)
 find_package(metatomic CONFIG REQUIRED)
 
 if(OPENMM_METATOMIC_TORCH)
+    set(CMAKE_CUDA_RUNTIME_LIBRARY Shared CACHE STRING "")
+    set(CUDA_USE_STATIC_CUDA_RUNTIME OFF CACHE BOOL "")
+    # nvcc compiler-id links -lcudart_static; Fedora's CUDA package often
+    # ships only the shared runtime.
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
     find_package(metatomic_torch CONFIG REQUIRED)
+    unset(CMAKE_TRY_COMPILE_TARGET_TYPE)
 endif()
 
 set(SPIKE_SOURCES spike/evaluate.cpp)
@@ -95,8 +116,8 @@ endif()
 enable_testing()
 add_test(NAME spike-core COMMAND openmm-metatomic-spike)
 if(OPENMM_METATOMIC_TORCH AND Python3_EXECUTABLE)
+    add_dependencies(openmm-metatomic-spike harmonic-pt)
     add_test(NAME spike-torch COMMAND openmm-metatomic-spike ${HARMONIC_PT})
-    set_tests_properties(spike-torch PROPERTIES DEPENDS harmonic-pt)
 endif()
 
 if(OPENMM_DIR)
