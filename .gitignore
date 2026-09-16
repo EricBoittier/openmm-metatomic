@@ -1,0 +1,38 @@
+# Build
+build/
+cmake-build-*/
+*.so
+*.dylib
+*.dll
+*.a
+*.o
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+cmake_install.cmake
+compile_commands.json
+.ninja_*
+*.ninja
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+.pytest_cache/
+.venv/
+venv/
+
+# Generated test models
+tests/*.pt
+*.pt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.cache/
+
+# OS
+.DS_Store
