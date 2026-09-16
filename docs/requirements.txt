@@ -1,0 +1,9 @@
+sphinx>=7.0
+sphinx-gallery>=0.16
+sphinx-copybutton
+furo
+matplotlib
+numpy
+torch
+metatomic-torch
+metatensor-torch

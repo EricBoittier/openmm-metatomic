@@ -4,6 +4,7 @@
 
 #include "openmmmetatomic/internal/HarmonicModel.h"
 
+#include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
@@ -28,18 +29,94 @@ using OpenMMMetatomic::makeSystem;
 namespace {
 
 constexpr double kSpring = 1.0;
-const std::vector<int32_t> atomTypes = {1, 1, 8};
-const std::vector<double> rest = {
-    0.0, 0.0, 0.0,
-    0.1, 0.0, 0.0,
-    0.0, 0.1, 0.05,
+
+struct DemoSystem {
+    const char* name;
+    std::vector<int32_t> types;
+    std::vector<double> rest;
+    std::vector<double> positions;
+    bool periodic;
+    std::vector<double> cell;
 };
-const std::vector<double> positions = {
-    0.01, 0.02, -0.01,
-    0.12, -0.03, 0.04,
-    -0.02, 0.11, 0.02,
-};
-const std::vector<double> cell(9, 0.0);
+
+std::vector<double> xyz(std::initializer_list<std::initializer_list<double>> rows) {
+    std::vector<double> out;
+    out.reserve(rows.size() * 3);
+    for (const auto& row : rows) {
+        for (double value : row)
+            out.push_back(value);
+    }
+    return out;
+}
+
+std::vector<DemoSystem> demoSystems() {
+    const std::vector<double> vacuum(9, 0.0);
+    const std::vector<double> box = {1.5, 0.0, 0.0, 0.0, 1.5, 0.0, 0.0, 0.0, 1.5};
+    return {
+        DemoSystem{
+            "water",
+            {1, 1, 8},
+            xyz({{0.0757, 0.0586, 0.0}, {-0.0757, 0.0586, 0.0}, {0.0, 0.0, 0.0}}),
+            xyz({{0.0857, 0.0586, 0.0}, {-0.0757, 0.0486, 0.01}, {0.0, 0.01, -0.005}}),
+            false,
+            vacuum,
+        },
+        DemoSystem{
+            "methane",
+            {6, 1, 1, 1, 1},
+            xyz({
+                {0.0, 0.0, 0.0},
+                {0.06293, 0.06293, 0.06293},
+                {0.06293, -0.06293, -0.06293},
+                {-0.06293, 0.06293, -0.06293},
+                {-0.06293, -0.06293, 0.06293},
+            }),
+            xyz({
+                {0.005, 0.0, -0.004},
+                {0.07293, 0.06293, 0.06293},
+                {0.06293, -0.05293, -0.06293},
+                {-0.06293, 0.06293, -0.05293},
+                {-0.07293, -0.06293, 0.06293},
+            }),
+            false,
+            vacuum,
+        },
+        DemoSystem{
+            "co2",
+            {6, 8, 8},
+            xyz({{0.0, 0.0, 0.0}, {0.116, 0.0, 0.0}, {-0.116, 0.0, 0.0}}),
+            xyz({{0.0, 0.008, 0.0}, {0.126, 0.0, 0.004}, {-0.106, -0.006, 0.0}}),
+            false,
+            vacuum,
+        },
+        DemoSystem{
+            "carbon8",
+            {6, 6, 6, 6, 6, 6, 6, 6},
+            xyz({
+                {-0.07, -0.07, -0.07}, {-0.07, -0.07, 0.07},
+                {-0.07, 0.07, -0.07}, {-0.07, 0.07, 0.07},
+                {0.07, -0.07, -0.07}, {0.07, -0.07, 0.07},
+                {0.07, 0.07, -0.07}, {0.07, 0.07, 0.07},
+            }),
+            xyz({
+                {-0.062, -0.075, -0.067}, {-0.062, -0.075, 0.073},
+                {-0.062, 0.065, -0.067}, {-0.062, 0.065, 0.073},
+                {0.078, -0.075, -0.067}, {0.078, -0.075, 0.073},
+                {0.078, 0.065, -0.067}, {0.078, 0.065, 0.073},
+            }),
+            false,
+            vacuum,
+        },
+        DemoSystem{
+            "water_pbc",
+            {1, 1, 8},
+            xyz({{0.0757, 0.0586, 0.0}, {-0.0757, 0.0586, 0.0}, {0.0, 0.0, 0.0}}),
+            xyz({{0.0857, 0.0586, 0.0}, {-0.0757, 0.0486, 0.01}, {0.0, 0.01, -0.005}}),
+            true,
+            box,
+        },
+    };
+}
 
 bool close(double a, double b, double atol = 1e-8, double rtol = 1e-6) {
     return std::abs(a - b) <= atol + rtol * std::abs(b);
@@ -55,19 +132,9 @@ void requireClose(const char* label, double got, double expected,
     }
 }
 
-std::string deviceName(metatomic::ModelCapabilities::Device device) {
-    switch (device) {
-        case metatomic::ModelCapabilities::Device::CPU: return "cpu";
-        case metatomic::ModelCapabilities::Device::CUDA: return "cuda";
-        case metatomic::ModelCapabilities::Device::ROCM: return "rocm";
-        case metatomic::ModelCapabilities::Device::Metal: return "metal";
-    }
-    return "unknown";
-}
-
-double energyAt(metatomic::BaseModel& model, const std::vector<double>& pos) {
+double energyAt(metatomic::BaseModel& model, const DemoSystem& spec, const std::vector<double>& pos) {
     std::vector<metatomic::System> systems;
-    systems.push_back(makeSystem("nm", atomTypes, pos, false, cell));
+    systems.push_back(makeSystem("nm", spec.types, pos, spec.periodic, spec.cell));
     auto request = metatomic::Quantity::builder()
         .name("energy")
         .unit("kJ/mol")
@@ -79,82 +146,66 @@ double energyAt(metatomic::BaseModel& model, const std::vector<double>& pos) {
     return values(0, 0);
 }
 
-CoreEvaluation forcesAt(metatomic::BaseModel& model, const std::vector<double>& pos) {
+CoreEvaluation forcesAt(metatomic::BaseModel& model, const DemoSystem& spec) {
     std::vector<metatomic::System> systems;
-    systems.push_back(makeSystem("nm", atomTypes, pos, false, cell));
+    systems.push_back(makeSystem("nm", spec.types, spec.positions, spec.periodic, spec.cell));
     return evaluateCore(model, systems, true);
 }
 
-std::vector<double> finiteDifferenceForces(metatomic::BaseModel& model,
-                                           const std::vector<double>& pos) {
+std::vector<double> finiteDifferenceForces(metatomic::BaseModel& model, const DemoSystem& spec) {
     const double h = 1e-5;
-    auto displaced = pos;
-    std::vector<double> forces(pos.size());
-    for (size_t i = 0; i < pos.size(); i++) {
-        displaced[i] = pos[i] + h;
-        const double plus = energyAt(model, displaced);
-        displaced[i] = pos[i] - h;
-        const double minus = energyAt(model, displaced);
-        displaced[i] = pos[i];
+    auto displaced = spec.positions;
+    std::vector<double> forces(spec.positions.size());
+    for (size_t i = 0; i < spec.positions.size(); i++) {
+        displaced[i] = spec.positions[i] + h;
+        const double plus = energyAt(model, spec, displaced);
+        displaced[i] = spec.positions[i] - h;
+        const double minus = energyAt(model, spec, displaced);
+        displaced[i] = spec.positions[i];
         forces[i] = -(plus - minus) / (2.0 * h);
     }
     return forces;
 }
 
-void printForces(const char* title, const std::vector<double>& forces) {
-    std::cout << title << "\n";
-    for (size_t i = 0; i < forces.size() / 3; i++) {
-        std::cout << "  atom " << i << ": "
-                  << std::setprecision(12)
-                  << forces[3 * i] << " "
-                  << forces[3 * i + 1] << " "
-                  << forces[3 * i + 2] << "\n";
-    }
+double maxAbsDiff(const std::vector<double>& a, const std::vector<double>& b) {
+    double peak = 0.0;
+    for (size_t i = 0; i < a.size(); i++)
+        peak = std::max(peak, std::abs(a[i] - b[i]));
+    return peak;
 }
 
-int runCore() {
-    std::cout << "== metatomic-core backend (in-process HarmonicModel) ==\n";
-    auto raw = metatomic::BaseModel::to_mta_model(
-        std::make_unique<HarmonicModel>(kSpring, rest)
-    );
-    metatomic::ExternalModel model(raw);
-
-    const auto caps = model.capabilities();
-    const auto meta = model.metadata();
-    nlohmann::json metaJson = meta;
-    std::cout << metatomic::format_metadata(metaJson.dump()) << "\n";
-    std::cout << "dtype: " << (caps.dtype() == metatomic::ModelCapabilities::DType::Float64
-                                   ? "float64" : "float32") << "\n";
-    std::cout << "length unit: " << caps.length_unit() << "\n";
-    std::cout << "devices:";
-    for (auto device : caps.supported_devices())
-        std::cout << " " << deviceName(device);
-    std::cout << "\natomic types:";
-    for (auto type : caps.atomic_types())
-        std::cout << " " << type;
-    std::cout << "\npair lists: " << model.requested_pair_lists().size() << "\n";
-    std::cout << "requested inputs: " << model.requested_inputs().size() << "\n";
-    for (const auto& output : caps.outputs())
-        std::cout << "output: " << output.name() << " [" << output.unit() << "]\n";
-
-    const auto analyticE = HarmonicModel::analyticEnergy(kSpring, rest, positions);
-    const auto analyticF = HarmonicModel::analyticForces(kSpring, rest, positions);
-    const auto result = forcesAt(model, positions);
-    const auto fd = finiteDifferenceForces(model, positions);
-
-    std::cout << std::setprecision(12);
-    std::cout << "energy model    " << result.energy << "\n";
-    std::cout << "energy analytic " << analyticE << "\n";
-    printForces("forces model", result.forces);
-    printForces("forces analytic", analyticF);
-    printForces("forces FD", fd);
-
-    requireClose("energy vs analytic", result.energy, analyticE);
-    for (size_t i = 0; i < analyticF.size(); i++) {
-        requireClose("force vs analytic", result.forces[i], analyticF[i]);
-        requireClose("force vs FD", result.forces[i], fd[i], 1e-6, 1e-5);
+int runCore(const std::vector<DemoSystem>& systems) {
+    std::cout << "== metatomic-core backend ==\n";
+    std::cout << std::left << std::setw(12) << "system"
+              << std::right << std::setw(8) << "atoms"
+              << std::setw(16) << "E_model"
+              << std::setw(16) << "E_analytic"
+              << std::setw(14) << "max|dF|"
+              << std::setw(14) << "max|dF_FD|"
+              << "  pbc\n";
+    for (const auto& spec : systems) {
+        auto raw = metatomic::BaseModel::to_mta_model(
+            std::make_unique<HarmonicModel>(kSpring, spec.rest)
+        );
+        metatomic::ExternalModel model(raw);
+        const auto analyticE = HarmonicModel::analyticEnergy(kSpring, spec.rest, spec.positions);
+        const auto analyticF = HarmonicModel::analyticForces(kSpring, spec.rest, spec.positions);
+        const auto result = forcesAt(model, spec);
+        const auto fd = finiteDifferenceForces(model, spec);
+        requireClose((std::string(spec.name) + " energy").c_str(), result.energy, analyticE);
+        for (size_t i = 0; i < analyticF.size(); i++) {
+            requireClose((std::string(spec.name) + " force").c_str(), result.forces[i], analyticF[i]);
+            requireClose((std::string(spec.name) + " FD").c_str(), result.forces[i], fd[i], 1e-6, 1e-5);
+        }
+        std::cout << std::left << std::setw(12) << spec.name
+                  << std::right << std::setw(8) << spec.types.size()
+                  << std::setw(16) << std::setprecision(8) << result.energy
+                  << std::setw(16) << analyticE
+                  << std::setw(14) << maxAbsDiff(result.forces, analyticF)
+                  << std::setw(14) << maxAbsDiff(result.forces, fd)
+                  << "  " << (spec.periodic ? "yes" : "no") << "\n";
     }
-    std::cout << "core backend: energy and conservative forces match analytic + FD\n";
+    std::cout << "core backend: all systems match analytic + finite differences\n";
     return 0;
 }
 
@@ -166,27 +217,18 @@ torch::Device selectDevice(const std::vector<std::string>& supported, const std:
     return torch::Device(metatomic_torch::pick_device(supported, requested));
 }
 
-int runTorch(const std::string& path) {
-    std::cout << "\n== TorchScript backend (load_atomistic_model) ==\n";
+int runTorch(const DemoSystem& spec, const std::string& path) {
+    std::cout << "\n== TorchScript backend (" << spec.name << ", " << path << ") ==\n";
     auto model = metatomic_torch::load_atomistic_model(path);
     auto capabilities = model.run_method("capabilities")
                           .toCustomClass<metatomic_torch::ModelCapabilitiesHolder>();
-    std::cout << "dtype: " << capabilities->dtype() << "\n";
-    std::cout << "length unit: " << capabilities->length_unit() << "\n";
-    std::cout << "devices:";
-    for (const auto& device : capabilities->supported_devices)
-        std::cout << " " << device;
-    std::cout << "\natomic types:";
-    for (auto type : capabilities->atomic_types)
-        std::cout << " " << type;
-    std::cout << "\n";
-
     auto neighborRequests = model.run_method("requested_neighbor_lists").toList();
-    std::cout << "neighbor lists: " << neighborRequests.size() << "\n";
     auto requestedInputs = model.run_method("requested_inputs", true).toGenericDict();
-    std::cout << "requested inputs: " << requestedInputs.size() << "\n";
     if (requestedInputs.size() != 0)
         throw std::runtime_error("TorchScript harmonic should not request extra inputs");
+    std::cout << "dtype " << capabilities->dtype()
+              << "  neighbors " << neighborRequests.size()
+              << "  extra inputs " << requestedInputs.size() << "\n";
 
     auto outputs = capabilities->outputs();
     const auto energyKey = metatomic_torch::pick_output("energy", outputs, torch::nullopt);
@@ -199,14 +241,21 @@ int runTorch(const std::string& path) {
 
     const auto device = selectDevice(capabilities->supported_devices, "cpu");
     model.to(device);
-    auto types = torch::tensor(atomTypes, torch::TensorOptions().dtype(torch::kInt32)).to(device);
+    auto types = torch::tensor(spec.types, torch::TensorOptions().dtype(torch::kInt32)).to(device);
     auto pos = torch::from_blob(
-        const_cast<double*>(positions.data()),
-        {static_cast<int64_t>(atomTypes.size()), 3},
+        const_cast<double*>(spec.positions.data()),
+        {static_cast<int64_t>(spec.types.size()), 3},
         torch::TensorOptions().dtype(torch::kFloat64)
     ).clone().to(device).set_requires_grad(true);
-    auto cellTensor = torch::zeros({3, 3}, torch::TensorOptions().dtype(torch::kFloat64).device(device));
-    auto pbc = torch::tensor({false, false, false}, torch::TensorOptions().dtype(torch::kBool)).to(device);
+    auto cellTensor = torch::from_blob(
+        const_cast<double*>(spec.cell.data()),
+        {3, 3},
+        torch::TensorOptions().dtype(torch::kFloat64)
+    ).clone().to(device);
+    auto pbc = torch::tensor(
+        {spec.periodic, spec.periodic, spec.periodic},
+        torch::TensorOptions().dtype(torch::kBool)
+    ).to(device);
     auto system = torch::make_intrusive<metatomic_torch::SystemHolder>(types, pos, cellTensor, pbc);
 
     auto output = model.forward({
@@ -220,15 +269,13 @@ int runTorch(const std::string& path) {
     auto forceCpu = (-grad).to(torch::kCPU).to(torch::kFloat64).contiguous();
     const double energy = energyTensor.item<double>();
     const double* ptr = forceCpu.data_ptr<double>();
-
-    const auto analyticE = HarmonicModel::analyticEnergy(kSpring, rest, positions);
-    const auto analyticF = HarmonicModel::analyticForces(kSpring, rest, positions);
-    std::cout << std::setprecision(12);
-    std::cout << "energy model    " << energy << "\n";
-    std::cout << "energy analytic " << analyticE << "\n";
+    const auto analyticE = HarmonicModel::analyticEnergy(kSpring, spec.rest, spec.positions);
+    const auto analyticF = HarmonicModel::analyticForces(kSpring, spec.rest, spec.positions);
     requireClose("torch energy vs analytic", energy, analyticE, 1e-8, 1e-6);
     for (size_t i = 0; i < analyticF.size(); i++)
         requireClose("torch force vs analytic", ptr[i], analyticF[i], 1e-8, 1e-6);
+    std::cout << "energy model " << std::setprecision(12) << energy
+              << "  analytic " << analyticE << "\n";
     std::cout << "torch backend: energy and conservative forces match analytic\n";
     return 0;
 }
@@ -238,10 +285,11 @@ int runTorch(const std::string& path) {
 
 int main(int argc, char** argv) {
     try {
-        runCore();
+        const auto systems = demoSystems();
+        runCore(systems);
         if (argc > 1) {
 #ifdef OPENMM_METATOMIC_TORCH
-            runTorch(argv[1]);
+            runTorch(systems.front(), argv[1]);
 #else
             std::cerr << "TorchScript backend was not compiled (OPENMM_METATOMIC_TORCH=OFF)\n";
             return 1;

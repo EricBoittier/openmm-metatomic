@@ -54,8 +54,18 @@ cmake --build build
 
 The spike builds a `metatomic::System` from DLPack arrays, calls
 `execute_model` with position gradients, and checks energy/forces against the
-analytic harmonic well and finite differences. The `.pt` path uses the same
+analytic harmonic well and finite differences on water, methane, CO2, an
+eight-atom carbon cluster, and periodic water. The `.pt` path uses the same
 numbers through `load_atomistic_model`.
+
+## Examples
+
+A Sphinx gallery lives in `examples/`::
+
+    python3.14 -m pip install -r docs/requirements.txt
+    make -C docs html
+    # output: docs/_build/html/index.html
+
 
 ## Build
 
