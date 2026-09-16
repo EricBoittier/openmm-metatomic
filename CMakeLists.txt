@@ -72,14 +72,62 @@ openmm_metatomic_detect_prefixes()
 find_package(metatensor 0.2.4 CONFIG REQUIRED)
 find_package(metatomic CONFIG REQUIRED)
 
+function(openmm_metatomic_import_torch)
+    if(NOT Python3_EXECUTABLE)
+        message(FATAL_ERROR "Python3 is required to locate the TorchScript backend")
+    endif()
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE} -c
+            "from pathlib import Path
+import torch, metatensor_torch, metatomic_torch
+mm = '.'.join(torch.__version__.split('+')[0].split('.')[:2])
+print(Path(torch.__file__).resolve().parent)
+print(Path(metatensor_torch.__file__).resolve().parent / f'torch-{mm}')
+print(Path(metatomic_torch.__file__).resolve().parent / f'torch-{mm}')"
+        OUTPUT_VARIABLE _torch_paths
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        COMMAND_ERROR_IS_FATAL ANY
+    )
+    string(REPLACE "\n" ";" _torch_paths "${_torch_paths}")
+    list(GET _torch_paths 0 _torch_root)
+    list(GET _torch_paths 1 _mts_torch_root)
+    list(GET _torch_paths 2 _mta_torch_root)
+
+    add_library(c10 SHARED IMPORTED)
+    set_target_properties(c10 PROPERTIES
+        IMPORTED_LOCATION "${_torch_root}/lib/libc10.so"
+        INTERFACE_INCLUDE_DIRECTORIES "${_torch_root}/include"
+    )
+    add_library(torch_cpu SHARED IMPORTED)
+    set_target_properties(torch_cpu PROPERTIES
+        IMPORTED_LOCATION "${_torch_root}/lib/libtorch_cpu.so"
+        INTERFACE_INCLUDE_DIRECTORIES "${_torch_root}/include;${_torch_root}/include/torch/csrc/api/include"
+        INTERFACE_LINK_LIBRARIES c10
+    )
+    add_library(torch SHARED IMPORTED)
+    set_target_properties(torch PROPERTIES
+        IMPORTED_LOCATION "${_torch_root}/lib/libtorch.so"
+        INTERFACE_INCLUDE_DIRECTORIES "${_torch_root}/include;${_torch_root}/include/torch/csrc/api/include"
+        INTERFACE_LINK_LIBRARIES "torch_cpu;c10"
+    )
+    add_library(metatensor_torch SHARED IMPORTED)
+    set_target_properties(metatensor_torch PROPERTIES
+        IMPORTED_LOCATION "${_mts_torch_root}/lib/libmetatensor_torch.so"
+        INTERFACE_INCLUDE_DIRECTORIES "${_mts_torch_root}/include"
+        INTERFACE_LINK_LIBRARIES "torch;metatensor"
+    )
+    add_library(metatomic_torch SHARED IMPORTED)
+    set_target_properties(metatomic_torch PROPERTIES
+        IMPORTED_LOCATION "${_mta_torch_root}/lib/libmetatomic_torch.so"
+        INTERFACE_INCLUDE_DIRECTORIES "${_mta_torch_root}/include"
+        INTERFACE_LINK_LIBRARIES "metatensor_torch;torch"
+    )
+    set(TORCH_INSTALL_PREFIX "${_torch_root}" PARENT_SCOPE)
+    message(STATUS "Imported TorchScript backend from ${_mta_torch_root}")
+endfunction()
+
 if(OPENMM_METATOMIC_TORCH)
-    set(CMAKE_CUDA_RUNTIME_LIBRARY Shared CACHE STRING "")
-    set(CUDA_USE_STATIC_CUDA_RUNTIME OFF CACHE BOOL "")
-    # nvcc compiler-id links -lcudart_static; Fedora's CUDA package often
-    # ships only the shared runtime.
-    set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
-    find_package(metatomic_torch CONFIG REQUIRED)
-    unset(CMAKE_TRY_COMPILE_TARGET_TYPE)
+    openmm_metatomic_import_torch()
 endif()
 
 set(SPIKE_SOURCES spike/evaluate.cpp)
@@ -100,6 +148,11 @@ if(_mta_loc)
 endif()
 if(OPENMM_METATOMIC_TORCH AND DEFINED TORCH_INSTALL_PREFIX)
     set_property(TARGET openmm-metatomic-spike APPEND PROPERTY BUILD_RPATH "${TORCH_INSTALL_PREFIX}/lib")
+    get_target_property(_mta_torch_loc metatomic_torch IMPORTED_LOCATION)
+    if(_mta_torch_loc)
+        get_filename_component(_mta_torch_libdir "${_mta_torch_loc}" DIRECTORY)
+        set_property(TARGET openmm-metatomic-spike APPEND PROPERTY BUILD_RPATH "${_mta_torch_libdir}")
+    endif()
 endif()
 
 set(HARMONIC_PT "${CMAKE_CURRENT_BINARY_DIR}/harmonic.pt")
@@ -116,7 +169,6 @@ endif()
 enable_testing()
 add_test(NAME spike-core COMMAND openmm-metatomic-spike)
 if(OPENMM_METATOMIC_TORCH AND Python3_EXECUTABLE)
-    add_dependencies(openmm-metatomic-spike harmonic-pt)
     add_test(NAME spike-torch COMMAND openmm-metatomic-spike ${HARMONIC_PT})
 endif()
 
@@ -139,12 +191,16 @@ if(OPENMM_DIR)
     )
     target_link_libraries(OpenMMMetatomic PUBLIC metatomic::shared)
     target_link_libraries(OpenMMMetatomic PRIVATE "${OPENMM_DIR}/lib/libOpenMM.so")
-    if(OPENMM_METATOMIC_TORCH)
-        target_compile_definitions(OpenMMMetatomic PRIVATE OPENMM_METATOMIC_TORCH)
-        target_link_libraries(OpenMMMetatomic PRIVATE metatomic_torch)
-    endif()
     set_target_properties(OpenMMMetatomic PROPERTIES
         BUILD_RPATH "${_mta_libdir};${OPENMM_DIR}/lib"
     )
+    if(OPENMM_METATOMIC_TORCH)
+        target_compile_definitions(OpenMMMetatomic PRIVATE OPENMM_METATOMIC_TORCH)
+        target_link_libraries(OpenMMMetatomic PRIVATE metatomic_torch)
+        set_property(TARGET OpenMMMetatomic APPEND PROPERTY BUILD_RPATH "${TORCH_INSTALL_PREFIX}/lib")
+        if(_mta_torch_libdir)
+            set_property(TARGET OpenMMMetatomic APPEND PROPERTY BUILD_RPATH "${_mta_torch_libdir}")
+        endif()
+    endif()
     install(TARGETS OpenMMMetatomic DESTINATION lib/plugins)
 endif()

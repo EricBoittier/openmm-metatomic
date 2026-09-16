@@ -45,8 +45,9 @@ bool close(double a, double b, double atol = 1e-8, double rtol = 1e-6) {
     return std::abs(a - b) <= atol + rtol * std::abs(b);
 }
 
-void requireClose(const char* label, double got, double expected) {
-    if (!close(got, expected)) {
+void requireClose(const char* label, double got, double expected,
+                  double atol = 1e-8, double rtol = 1e-6) {
+    if (!close(got, expected, atol, rtol)) {
         throw std::runtime_error(
             std::string(label) + ": got " + std::to_string(got) +
             ", expected " + std::to_string(expected)

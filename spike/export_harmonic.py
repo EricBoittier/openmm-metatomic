@@ -1,10 +1,8 @@
 """Export a TorchScript harmonic well matching the C++ M0 spike."""
 
-from __future__ import annotations
-
-import argparse
 from typing import Dict, List, Optional
 
+import argparse
 import torch
 from metatensor.torch import Labels, TensorBlock, TensorMap
 from metatomic.torch import AtomisticModel, ModelCapabilities, ModelMetadata, ModelOutput, System

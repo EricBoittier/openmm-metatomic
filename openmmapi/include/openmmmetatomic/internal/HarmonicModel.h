@@ -38,6 +38,7 @@ public:
                 .name("energy")
                 .unit("kJ/mol")
                 .sample_kind(metatomic::SampleKind::System)
+                .add_gradient(metatomic::Gradients::Positions)
                 .build())
             .build();
     }
