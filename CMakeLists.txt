@@ -166,10 +166,49 @@ if(OPENMM_METATOMIC_TORCH AND Python3_EXECUTABLE)
     add_custom_target(harmonic-pt ALL DEPENDS ${HARMONIC_PT})
 endif()
 
+add_executable(openmm-metatomic-bpnn spike/evaluate_bpnn.cpp)
+target_include_directories(openmm-metatomic-bpnn PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/openmmapi/include
+)
+target_link_libraries(openmm-metatomic-bpnn PRIVATE metatomic::shared)
+if(_mta_loc)
+    set_property(TARGET openmm-metatomic-bpnn APPEND PROPERTY BUILD_RPATH "${_mta_libdir}")
+endif()
+if(OPENMM_METATOMIC_TORCH)
+    target_compile_definitions(openmm-metatomic-bpnn PRIVATE OPENMM_METATOMIC_TORCH)
+    target_link_libraries(openmm-metatomic-bpnn PRIVATE metatomic_torch)
+    if(DEFINED TORCH_INSTALL_PREFIX)
+        set_property(TARGET openmm-metatomic-bpnn APPEND PROPERTY BUILD_RPATH "${TORCH_INSTALL_PREFIX}/lib")
+        if(_mta_torch_libdir)
+            set_property(TARGET openmm-metatomic-bpnn APPEND PROPERTY BUILD_RPATH "${_mta_torch_libdir}")
+        endif()
+    endif()
+endif()
+
+set(BPNN_PT "${CMAKE_CURRENT_BINARY_DIR}/soap-bpnn.pt")
+if(OPENMM_METATOMIC_TORCH AND Python3_EXECUTABLE)
+    add_custom_command(
+        OUTPUT ${BPNN_PT}
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/spike/export_bpnn.py ${BPNN_PT}
+        DEPENDS
+            ${CMAKE_CURRENT_SOURCE_DIR}/spike/export_bpnn.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/examples/_bpnn.py
+        COMMENT "Export TorchScript SOAP-BPNN model"
+    )
+    add_custom_target(bpnn-pt ALL DEPENDS ${BPNN_PT})
+endif()
+
 enable_testing()
 add_test(NAME spike-core COMMAND openmm-metatomic-spike)
+add_test(NAME spike-bpnn COMMAND openmm-metatomic-bpnn)
 if(OPENMM_METATOMIC_TORCH AND Python3_EXECUTABLE)
     add_test(NAME spike-torch COMMAND openmm-metatomic-spike ${HARMONIC_PT})
+    add_test(NAME spike-bpnn-torch COMMAND openmm-metatomic-bpnn ${BPNN_PT})
+    add_test(
+        NAME bpnn-python
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/examples/_bpnn.py
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/examples
+    )
 endif()
 
 if(OPENMM_DIR)

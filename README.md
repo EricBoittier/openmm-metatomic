@@ -50,6 +50,7 @@ cmake -S . -B build -DOPENMM_METATOMIC_TORCH=ON
 cmake --build build
 ./build/openmm-metatomic-spike            # in-process HarmonicModel via metatomic-core
 ./build/openmm-metatomic-spike harmonic.pt  # TorchScript .pt via metatomic-torch
+./build/openmm-metatomic-bpnn soap-bpnn.pt  # SOAP-BPNN core vs TorchScript
 ```
 
 The spike builds a `metatomic::System` from DLPack arrays, calls

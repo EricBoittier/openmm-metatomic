@@ -45,7 +45,7 @@ sphinx_gallery_conf = {
     "gallery_dirs": os.path.join(ROOT, "docs", "src", "examples"),
     "filename_pattern": r"plot_",
     "ignore_pattern": r"^_|README",
-    "copyfile_regex": r"_harmonic\.py|_openmm\.py|_petmad\.py",
+    "copyfile_regex": r"_harmonic\.py|_openmm\.py|_petmad\.py|_bpnn\.py",
     "within_subsection_order": FileNameSortKey,
     "remove_config_comments": True,
     "matplotlib_animations": False,

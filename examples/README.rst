@@ -8,9 +8,12 @@ The gallery covers three layers:
    an eight-atom carbon cube, and periodic water. **core**
    (``metatomic::execute_model``) and **torch** (``.pt`` /
    ``load_atomistic_model``).
-2. **PET-MAD** — the vendored extra-small v1.5.0 TorchScript file from
+2. **SOAP-BPNN** — metatrain ``soap_bpnn``-style SOAP power spectrum plus a
+   per-species SiLU MLP, implemented in metatomic-core C++ and as a matching
+   TorchScript module.
+3. **PET-MAD** — the vendored extra-small v1.5.0 TorchScript file from
    ``lab-cosmo/upet``, run through OpenMM-ML (pure ML water, toluene, and
    toluene-in-water ML/MM).
-3. **OpenMM-ML setups and timings** — ``createSystem``, ``createMixedSystem``
+4. **OpenMM-ML setups and timings** — ``createSystem``, ``createMixedSystem``
    (including λ interpolation), and wall-clock cost of setup vs evaluation vs
    short Langevin MD on CPU, Reference, Torch CUDA, and the C++ spike.

@@ -9,10 +9,9 @@ All notable changes to openmm-metatomic are documented here, following
 
 - GitHub Pages and a Docs workflow that builds the Sphinx gallery
   (<https://ericboittier.github.io/openmm-metatomic/>).
-- Local timing baseline for the current end-user path
-  (`MLPotential("metatomic")` → `PythonForce`) and the C++ `execute_model`
-  spike. Re-run with `python3.14 examples/plot_08_timings.py` and
-  `./build/openmm-metatomic-spike --bench 80 build/harmonic.pt`.
+- SOAP-BPNN twin of metatrain `soap_bpnn` (legacy path): SOAP power spectrum
+  plus a per-species SiLU MLP in metatomic-core C++, checked against a
+  matching TorchScript export. `./build/openmm-metatomic-bpnn build/soap-bpnn.pt`
 
 ### Timing baseline (2026-09-16)
 
