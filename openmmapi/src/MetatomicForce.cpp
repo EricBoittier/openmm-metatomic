@@ -4,13 +4,14 @@
 
 #include "openmmmetatomic/MetatomicForce.h"
 #include "openmmmetatomic/internal/MetatomicForceImpl.h"
+#include "openmm/OpenMMException.h"
 
 using namespace OpenMMMetatomic;
 using namespace OpenMM;
 using namespace std;
 
 MetatomicForce::MetatomicForce(const string& modelPath) :
-    modelPath(modelPath), checkConsistency(false), usePeriodic(false) {
+    modelPath(modelPath), backend("auto"), checkConsistency(false), usePeriodic(false) {
     setName("MetatomicForce");
 }
 
@@ -32,6 +33,12 @@ void MetatomicForce::setAtomicTypes(const vector<int>& types) {
 
 void MetatomicForce::setUsesPeriodicBoundaryConditions(bool periodic) {
     usePeriodic = periodic;
+}
+
+void MetatomicForce::setBackend(const string& backend) {
+    if (backend != "auto" && backend != "torch" && backend != "core")
+        throw OpenMMException("MetatomicForce: backend must be auto, torch, or core");
+    this->backend = backend;
 }
 
 const string& MetatomicForce::getModelPath() const {
@@ -56,6 +63,10 @@ const vector<int>& MetatomicForce::getAtomicTypes() const {
 
 bool MetatomicForce::usesPeriodicBoundaryConditions() const {
     return usePeriodic;
+}
+
+const string& MetatomicForce::getBackend() const {
+    return backend;
 }
 
 ForceImpl* MetatomicForce::createImpl() const {

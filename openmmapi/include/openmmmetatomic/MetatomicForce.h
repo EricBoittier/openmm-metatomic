@@ -56,6 +56,8 @@ public:
     void setCheckConsistency(bool enabled);
     void setAtomicTypes(const std::vector<int>& types);
     void setUsesPeriodicBoundaryConditions(bool periodic);
+    /// Backend: "auto" (default), "torch" (TorchScript .pt), or "core" (metatomic-core).
+    void setBackend(const std::string& backend);
 
     const std::string& getModelPath() const;
     const std::string& getDevice() const;
@@ -63,6 +65,7 @@ public:
     bool getCheckConsistency() const;
     const std::vector<int>& getAtomicTypes() const;
     bool usesPeriodicBoundaryConditions() const;
+    const std::string& getBackend() const;
 
 protected:
     OpenMM::ForceImpl* createImpl() const;
@@ -71,6 +74,7 @@ private:
     std::string modelPath;
     std::string device;
     std::string extensionsDirectory;
+    std::string backend;
     bool checkConsistency;
     bool usePeriodic;
     std::vector<int> atomicTypes;

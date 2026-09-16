@@ -3,6 +3,7 @@
  * -------------------------------------------------------------------------- */
 
 #include "openmmmetatomic/internal/MetatomicEvaluator.h"
+#include "openmmmetatomic/internal/HarmonicModel.h"
 #include "openmm/OpenMMException.h"
 
 #ifdef DIM
@@ -10,15 +11,17 @@
 #endif
 
 #include <cmath>
+#include <filesystem>
 #include <sstream>
 #include <unordered_set>
 
+#ifdef OPENMM_METATOMIC_TORCH
 #include <torch/script.h>
 #include <metatensor/torch.hpp>
 #include <metatomic/torch.hpp>
-
 #ifdef OPENMM_METATOMIC_USE_VESIN
 #include <vesin.h>
+#endif
 #endif
 
 using namespace OpenMMMetatomic;
@@ -27,7 +30,49 @@ using namespace std;
 
 namespace {
 
-torch::Device selectDevice(const vector<string>& supported, const string& desired) {
+string fileExtension(const string& path) {
+    const auto dot = path.rfind('.');
+    if (dot == string::npos || dot == path.size() - 1)
+        return "";
+    return path.substr(dot);
+}
+
+string resolveBackend(const string& requested, const string& path) {
+    if (requested.empty() || requested == "auto") {
+        const auto ext = fileExtension(path);
+        if (ext == ".pt" || ext == ".pth")
+            return "torch";
+        return "core";
+    }
+    return requested;
+}
+
+void loadCorePlugins(const string& extensionsDirectory) {
+    if (extensionsDirectory.empty())
+        return;
+    namespace fs = std::filesystem;
+    const fs::path root(extensionsDirectory);
+    auto loadOne = [](const fs::path& path) {
+        metatomic::load_plugin(path.string());
+    };
+    if (fs::is_regular_file(root)) {
+        loadOne(root);
+        return;
+    }
+    if (!fs::is_directory(root)) {
+        throw OpenMMException(
+            "MetatomicForce: extensions directory '" + extensionsDirectory + "' does not exist"
+        );
+    }
+    for (const auto& entry : fs::directory_iterator(root)) {
+        const auto ext = entry.path().extension();
+        if (ext == ".so" || ext == ".dylib" || ext == ".dll")
+            loadOne(entry.path());
+    }
+}
+
+#ifdef OPENMM_METATOMIC_TORCH
+torch::Device selectTorchDevice(const vector<string>& supported, const string& desired) {
     torch::optional<string> requested = torch::nullopt;
     if (!desired.empty())
         requested = desired;
@@ -199,12 +244,160 @@ void addNeighborList(
     metatomic_torch::register_autograd_neighbors(system, neighbors, checkConsistency);
     system->add_neighbor_list(request, neighbors);
 }
+#endif
 
 } // namespace
 
 class OpenMMMetatomic::MetatomicEvaluatorImpl {
 public:
-    explicit MetatomicEvaluatorImpl(const MetatomicEvaluator::Config& config) {
+    virtual ~MetatomicEvaluatorImpl() = default;
+    virtual const MetatomicEvaluator::ModelInfo& info() const = 0;
+    virtual MetatomicEvaluator::Result compute(const vector<Vec3>& positions, const Vec3 box[3]) const = 0;
+};
+
+namespace {
+
+class CoreEvaluatorImpl final : public MetatomicEvaluatorImpl {
+public:
+    explicit CoreEvaluatorImpl(const MetatomicEvaluator::Config& config) {
+        loadCorePlugins(config.extensionsDirectory);
+        if (config.modelPath == "harmonic") {
+            model = make_unique<HarmonicModel>(
+                1.0, vector<double>(3 * config.atomicTypes.size(), 0.0)
+            );
+        }
+        else {
+            try {
+                model = make_unique<metatomic::ExternalModel>(
+                    metatomic::load_model(config.modelPath)
+                );
+            }
+            catch (const exception& e) {
+                throw OpenMMException(
+                    "MetatomicForce: failed to load model '" + config.modelPath + "': " + e.what()
+                );
+            }
+        }
+
+        const auto caps = model->capabilities();
+        info_.backend = "core";
+        info_.dtype = caps.dtype() == metatomic::ModelCapabilities::DType::Float64 ? "float64" : "float32";
+        info_.lengthUnit = caps.length_unit();
+        info_.device = "cpu";
+        info_.atomicTypes = caps.atomic_types();
+        for (auto device : caps.supported_devices()) {
+            if (device == metatomic::ModelCapabilities::Device::CPU)
+                info_.supportedDevices.push_back("cpu");
+            else if (device == metatomic::ModelCapabilities::Device::CUDA)
+                info_.supportedDevices.push_back("cuda");
+            else if (device == metatomic::ModelCapabilities::Device::ROCM)
+                info_.supportedDevices.push_back("rocm");
+            else if (device == metatomic::ModelCapabilities::Device::Metal)
+                info_.supportedDevices.push_back("metal");
+        }
+
+        unordered_set<int64_t> allowed(info_.atomicTypes.begin(), info_.atomicTypes.end());
+        typesHost.resize(config.atomicTypes.size());
+        for (size_t i = 0; i < config.atomicTypes.size(); i++) {
+            const int type = config.atomicTypes[i];
+            if (!allowed.count(type)) {
+                throw OpenMMException(
+                    "MetatomicForce: this model does not support atomic type " + to_string(type)
+                );
+            }
+            typesHost[i] = static_cast<int32_t>(type);
+        }
+
+        const auto pairLists = model->requested_pair_lists();
+        info_.neighborListRequests = static_cast<int>(pairLists.size());
+        if (!pairLists.empty()) {
+            throw OpenMMException(
+                "MetatomicForce: core backend does not yet implement pair lists "
+                "(" + to_string(pairLists.size()) + " requested)"
+            );
+        }
+        for (const auto& input : model->requested_inputs()) {
+            info_.requestedInputs.push_back(input.name());
+            throw OpenMMException(
+                "MetatomicForce: this model requests extra input '" + input.name() +
+                "', which is not implemented yet."
+            );
+        }
+
+        bool hasEnergy = false;
+        for (const auto& output : caps.outputs()) {
+            if (output.name() == "energy") {
+                hasEnergy = true;
+                info_.energyKey = output.name();
+            }
+        }
+        if (!hasEnergy) {
+            throw OpenMMException(
+                "MetatomicForce: model '" + config.modelPath + "' does not provide an energy output"
+            );
+        }
+        checkConsistency = config.checkConsistency;
+        periodic = config.periodic;
+    }
+
+    const MetatomicEvaluator::ModelInfo& info() const override {
+        return info_;
+    }
+
+    MetatomicEvaluator::Result compute(const vector<Vec3>& positions, const Vec3 box[3]) const override {
+        if (positions.size() != typesHost.size()) {
+            throw OpenMMException(
+                "MetatomicForce: expected " + to_string(typesHost.size()) +
+                " positions, got " + to_string(positions.size())
+            );
+        }
+        const size_t n = positions.size();
+        vector<double> pos(3 * n);
+        for (size_t i = 0; i < n; i++) {
+            pos[3 * i + 0] = positions[i][0];
+            pos[3 * i + 1] = positions[i][1];
+            pos[3 * i + 2] = positions[i][2];
+        }
+        vector<double> cell(9, 0.0);
+        if (periodic) {
+            for (int i = 0; i < 3; i++) {
+                cell[3 * i + 0] = box[i][0];
+                cell[3 * i + 1] = box[i][1];
+                cell[3 * i + 2] = box[i][2];
+            }
+        }
+        try {
+            vector<metatomic::System> systems;
+            systems.push_back(makeSystem("nm", typesHost, pos, periodic, cell));
+            auto evaluated = evaluateCore(*model, systems, checkConsistency);
+            MetatomicEvaluator::Result result;
+            result.energy = evaluated.energy;
+            result.forces.resize(n);
+            for (size_t i = 0; i < n; i++) {
+                result.forces[i] = Vec3(
+                    evaluated.forces[3 * i],
+                    evaluated.forces[3 * i + 1],
+                    evaluated.forces[3 * i + 2]
+                );
+            }
+            return result;
+        }
+        catch (const exception& e) {
+            throw OpenMMException(string("MetatomicForce: model evaluation failed: ") + e.what());
+        }
+    }
+
+    mutable unique_ptr<metatomic::BaseModel> model;
+    vector<int32_t> typesHost;
+    bool checkConsistency = false;
+    bool periodic = false;
+    MetatomicEvaluator::ModelInfo info_;
+};
+
+#ifdef OPENMM_METATOMIC_TORCH
+class TorchEvaluatorImpl final : public MetatomicEvaluatorImpl {
+public:
+    explicit TorchEvaluatorImpl(const MetatomicEvaluator::Config& config) {
         torch::optional<string> extensions = torch::nullopt;
         if (!config.extensionsDirectory.empty())
             extensions = config.extensionsDirectory;
@@ -213,22 +406,23 @@ public:
         }
         catch (const exception& e) {
             throw OpenMMException(
-                "MetatomicForce: failed to load model '" + config.modelPath + "': " + e.what()
+                "MetatomicForce: failed to load TorchScript model '" + config.modelPath + "': " + e.what()
             );
         }
 
         capabilities = model.run_method("capabilities")
                           .toCustomClass<metatomic_torch::ModelCapabilitiesHolder>();
-        info.dtype = capabilities->dtype();
-        info.lengthUnit = capabilities->length_unit();
-        info.supportedDevices = capabilities->supported_devices;
-        info.atomicTypes = capabilities->atomic_types;
-        dtype = parseDtype(info.dtype);
-        device = selectDevice(info.supportedDevices, config.device);
-        info.device = device.str();
+        info_.backend = "torch";
+        info_.dtype = capabilities->dtype();
+        info_.lengthUnit = capabilities->length_unit();
+        info_.supportedDevices = capabilities->supported_devices;
+        info_.atomicTypes = capabilities->atomic_types;
+        dtype = parseDtype(info_.dtype);
+        device = selectTorchDevice(info_.supportedDevices, config.device);
+        info_.device = device.str();
         model.to(device);
 
-        unordered_set<int64_t> allowed(info.atomicTypes.begin(), info.atomicTypes.end());
+        unordered_set<int64_t> allowed(info_.atomicTypes.begin(), info_.atomicTypes.end());
         typesHost.resize(config.atomicTypes.size());
         for (size_t i = 0; i < config.atomicTypes.size(); i++) {
             const int type = config.atomicTypes[i];
@@ -247,12 +441,12 @@ public:
                 request.get().toCustomClass<metatomic_torch::NeighborListOptionsHolder>()
             );
         }
-        info.neighborListRequests = static_cast<int>(neighborRequests.size());
+        info_.neighborListRequests = static_cast<int>(neighborRequests.size());
 
         auto requestedInputs = model.run_method("requested_inputs", /*use_new_names=*/true).toGenericDict();
         for (const auto& entry : requestedInputs) {
             const string name(entry.key().toStringRef());
-            info.requestedInputs.push_back(name);
+            info_.requestedInputs.push_back(name);
             throw OpenMMException(
                 "MetatomicForce: this model requests extra input '" + name +
                 "', which is not implemented yet. Full-system energy and conservative "
@@ -261,26 +455,30 @@ public:
         }
 
         auto outputs = capabilities->outputs();
-        info.energyKey = metatomic_torch::pick_output("energy", outputs, torch::nullopt);
-        if (!outputs.contains(info.energyKey)) {
+        info_.energyKey = metatomic_torch::pick_output("energy", outputs, torch::nullopt);
+        if (!outputs.contains(info_.energyKey)) {
             throw OpenMMException(
                 "MetatomicForce: model '" + config.modelPath +
                 "' does not provide an energy output"
             );
         }
         auto energyOut = torch::make_intrusive<metatomic_torch::ModelOutputHolder>();
-        energyOut->set_sample_kind(outputs.at(info.energyKey)->sample_kind());
+        energyOut->set_sample_kind(outputs.at(info_.energyKey)->sample_kind());
         energyOut->set_unit("kJ/mol");
         options = torch::make_intrusive<metatomic_torch::ModelEvaluationOptionsHolder>();
         options->set_length_unit("nm");
-        options->outputs.insert(info.energyKey, energyOut);
+        options->outputs.insert(info_.energyKey, energyOut);
 
         checkConsistency = config.checkConsistency;
         periodic = config.periodic;
         pbc = torch::tensor({periodic, periodic, periodic}, torch::TensorOptions().dtype(torch::kBool)).to(device);
     }
 
-    MetatomicEvaluator::Result compute(const vector<Vec3>& positions, const Vec3 box[3]) const {
+    const MetatomicEvaluator::ModelInfo& info() const override {
+        return info_;
+    }
+
+    MetatomicEvaluator::Result compute(const vector<Vec3>& positions, const Vec3 box[3]) const override {
         if (positions.size() != typesHost.size()) {
             throw OpenMMException(
                 "MetatomicForce: expected " + to_string(typesHost.size()) +
@@ -319,7 +517,7 @@ public:
             throw OpenMMException(string("MetatomicForce: model evaluation failed: ") + e.what());
         }
         auto dict = output.toGenericDict();
-        auto energyMap = dict.at(info.energyKey).toCustomClass<metatensor_torch::TensorMapHolder>();
+        auto energyMap = dict.at(info_.energyKey).toCustomClass<metatensor_torch::TensorMapHolder>();
         auto energyBlock = metatensor_torch::TensorMapHolder::block_by_id(energyMap, 0);
         auto energyTensor = energyBlock->values().sum();
         energyTensor.backward();
@@ -350,17 +548,37 @@ public:
     torch::Dtype dtype = torch::kFloat32;
     bool checkConsistency = false;
     bool periodic = false;
-    MetatomicEvaluator::ModelInfo info;
+    MetatomicEvaluator::ModelInfo info_;
 };
+#endif
+
+unique_ptr<MetatomicEvaluatorImpl> makeImpl(const MetatomicEvaluator::Config& config) {
+    const auto backend = resolveBackend(config.backend, config.modelPath);
+    if (backend == "torch") {
+#ifdef OPENMM_METATOMIC_TORCH
+        return make_unique<TorchEvaluatorImpl>(config);
+#else
+        throw OpenMMException(
+            "MetatomicForce: TorchScript backend was not compiled. "
+            "Rebuild with OPENMM_METATOMIC_TORCH=ON or use setBackend(\"core\")."
+        );
+#endif
+    }
+    if (backend == "core")
+        return make_unique<CoreEvaluatorImpl>(config);
+    throw OpenMMException("MetatomicForce: unknown backend '" + backend + "'");
+}
+
+} // namespace
 
 MetatomicEvaluator::MetatomicEvaluator(const Config& config) :
-    impl(make_unique<MetatomicEvaluatorImpl>(config)) {
+    impl(makeImpl(config)) {
 }
 
 MetatomicEvaluator::~MetatomicEvaluator() = default;
 
 const MetatomicEvaluator::ModelInfo& MetatomicEvaluator::info() const {
-    return impl->info;
+    return impl->info();
 }
 
 MetatomicEvaluator::Result MetatomicEvaluator::compute(const vector<Vec3>& positions,

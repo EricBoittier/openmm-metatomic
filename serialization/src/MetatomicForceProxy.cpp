@@ -24,6 +24,7 @@ void MetatomicForceProxy::serialize(const void* object, SerializationNode& node)
     node.setStringProperty("extensionsDirectory", force.getExtensionsDirectory());
     node.setBoolProperty("checkConsistency", force.getCheckConsistency());
     node.setBoolProperty("usesPeriodic", force.usesPeriodicBoundaryConditions());
+    node.setStringProperty("backend", force.getBackend());
     SerializationNode& types = node.createChildNode("AtomicTypes");
     for (int type : force.getAtomicTypes())
         types.createChildNode("Type").setIntProperty("value", type);
@@ -40,6 +41,7 @@ void* MetatomicForceProxy::deserialize(const SerializationNode& node) const {
         force->setExtensionsDirectory(node.getStringProperty("extensionsDirectory", ""));
         force->setCheckConsistency(node.getBoolProperty("checkConsistency", false));
         force->setUsesPeriodicBoundaryConditions(node.getBoolProperty("usesPeriodic", false));
+        force->setBackend(node.getStringProperty("backend", "auto"));
         vector<int> types;
         for (const auto& child : node.getChildren()) {
             if (child.getName() == "AtomicTypes") {

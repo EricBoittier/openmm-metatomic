@@ -33,6 +33,7 @@ void MetatomicForceImpl::initialize(ContextImpl& context) {
     config.checkConsistency = owner.getCheckConsistency();
     config.atomicTypes = owner.getAtomicTypes();
     config.periodic = owner.usesPeriodicBoundaryConditions();
+    config.backend = owner.getBackend();
     evaluator = make_unique<MetatomicEvaluator>(config);
     CustomCPPForceImpl::initialize(context);
 }

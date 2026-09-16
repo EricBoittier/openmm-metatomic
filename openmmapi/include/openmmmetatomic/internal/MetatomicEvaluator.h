@@ -26,6 +26,7 @@ public:
         bool checkConsistency = false;
         std::vector<int> atomicTypes;
         bool periodic = false;
+        std::string backend = "auto";
     };
 
     struct Result {
@@ -42,6 +43,7 @@ public:
         std::vector<std::string> requestedInputs;
         int neighborListRequests = 0;
         std::string device;
+        std::string backend;
     };
 
     explicit MetatomicEvaluator(const Config& config);
