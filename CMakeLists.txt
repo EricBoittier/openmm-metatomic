@@ -281,4 +281,28 @@ if(OPENMM_DIR)
         endif()
     endif()
     install(TARGETS OpenMMMetatomic DESTINATION lib/plugins)
+
+    add_executable(openmm-metatomic-bench-scaling spike/bench_scaling.cpp)
+    target_include_directories(openmm-metatomic-bench-scaling PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/openmmapi/include
+        ${OPENMM_DIR}/include
+    )
+    target_link_libraries(openmm-metatomic-bench-scaling PRIVATE
+        OpenMMMetatomic metatomic::shared "${OPENMM_DIR}/lib/libOpenMM.so"
+    )
+    set_property(TARGET openmm-metatomic-bench-scaling APPEND PROPERTY
+        BUILD_RPATH "${_mta_libdir};${OPENMM_DIR}/lib"
+    )
+    if(OPENMM_METATOMIC_TORCH)
+        target_compile_definitions(openmm-metatomic-bench-scaling PRIVATE OPENMM_METATOMIC_TORCH)
+        target_link_libraries(openmm-metatomic-bench-scaling PRIVATE metatomic_torch)
+        set_property(TARGET openmm-metatomic-bench-scaling APPEND PROPERTY BUILD_RPATH "${TORCH_INSTALL_PREFIX}/lib")
+        if(_mta_torch_libdir)
+            set_property(TARGET openmm-metatomic-bench-scaling APPEND PROPERTY BUILD_RPATH "${_mta_torch_libdir}")
+        endif()
+    endif()
+    add_test(
+        NAME bench-scaling-smoke
+        COMMAND openmm-metatomic-bench-scaling --sizes 3,30 --repeats 3 --warmup 1
+    )
 endif()

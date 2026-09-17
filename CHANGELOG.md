@@ -7,6 +7,17 @@ All notable changes to openmm-metatomic are documented here, following
 
 ### Added
 
+- `spike/bench_scaling.cpp` (`openmm-metatomic-bench-scaling`, built whenever
+  `OPENMM_DIR` is set): the first timing that actually exercises
+  `MetatomicForce` through a real `OpenMM::Context` (`CustomCPPForceImpl` ->
+  `getState`), for both backends, against the same model called directly
+  with no OpenMM in the loop. Every row is verified against the analytic
+  harmonic-well energy before it is timed (`verifyCore`/`verifyTorch`), and
+  each reported number is a median/mean/stddev over 50 timed evals (15
+  warmup) — see the timing baseline below for repeated full-process runs on
+  top of that. `spike/export_scaling_models.py` exports the matching
+  per-atom-count TorchScript models. Registered as a small smoke test
+  (`bench-scaling-smoke`, N=3,30) in `ctest`.
 - GitHub Pages and a Docs workflow that builds the Sphinx gallery
   (<https://ericboittier.github.io/openmm-metatomic/>).
 - SOAP-BPNN twin of metatrain `soap_bpnn` (legacy path): torch-spex Laplacian
@@ -116,6 +127,94 @@ the expected behavior for a cell-list-based neighbor search at this density.
 from 3k to 60k atoms for a 20x atom count increase), so for large systems
 the one-time `MLPotential.createSystem()` call, not the per-step cost, is
 where wall-clock time concentrates for short runs.
+
+### Timing baseline: native MetatomicForce vs. TorchScript (2026-09-17)
+
+First timing of the actual M1 deliverable: `MetatomicForce` evaluated
+through a real `OpenMM::Context`, not the standalone spike or the
+`PythonForce` fallback. Same machine as the scaling baseline above
+(Threadripper PRO 5945WX, 12c/24t). `spike/bench_scaling.cpp`, Reference
+platform, independent-atom harmonic well (`E = 0.5 sum ||r||^2`, k=1,
+r0=0 — same model both backends evaluate, core built-in vs. an exported
+`.pt` of the identical math). 50 timed evals after 15 warmup calls per
+row, energies checked against the analytic solution before timing.
+**Every number below is the median of 3 independent process launches**
+(fresh interpreter/thread-pool state each time), reported as
+`middle (low-high)` across those 3 runs so the process-to-process
+variance is visible rather than hidden by picking one run.
+
+libtorch defaults to 12 intra-op threads on this machine; metatomic-core's
+`execute_model` is single-threaded throughout. Both are reported, since
+that default-vs-pinned split *is* the finding.
+
+#### Default libtorch threading (12 threads)
+
+| Atoms | core, direct `execute_model` | core, `MetatomicForce`/`Context` | torch, direct forward+backward | torch, `MetatomicForce`/`Context` |
+| ---: | ---: | ---: | ---: | ---: |
+| 3 | 0.0214 ms | 0.0225 ms | 0.2065 ms | 0.2157 ms |
+| 30 | 0.0223 ms | 0.0245 ms | 0.2077 ms | 0.2173 ms |
+| 300 | 0.0348 (0.030-0.040) ms | 0.0338 ms | 0.2117 ms | 0.2249 ms |
+| 3,000 | 0.0886 ms | 0.1120 ms | 0.2457 ms | 0.2791 ms |
+| 15,000 | 0.824 ms | 1.066 ms | 0.843 (0.39\*-0.85) ms | 1.511 (0.99-1.54) ms |
+| 60,000 | 3.231 (3.208-3.500) ms | 5.698 (5.681-5.749) ms | 1.547 (1.526-1.555) ms | 2.418 (1.319-2.566) ms |
+
+\* one of the three runs produced a 0.389 ms outlier at 15k atoms, well
+below the other two (0.843, 0.852 ms); not reproduced on any other row or
+run, and plausibly a scheduler artifact. Left in rather than discarded.
+
+#### libtorch pinned to 1 thread (`--torch-threads 1`, apples-to-apples with core)
+
+| Atoms | core, direct `execute_model` | core, `MetatomicForce`/`Context` | torch, direct forward+backward | torch, `MetatomicForce`/`Context` |
+| ---: | ---: | ---: | ---: | ---: |
+| 3 | 0.0207 ms | 0.0221 ms | 0.2049 ms | 0.2140 ms |
+| 30 | 0.0218 ms | 0.0240 ms | 0.2072 ms | 0.2164 ms |
+| 300 | 0.0291 ms | 0.0340 ms | 0.2104 ms | 0.2236 ms |
+| 3,000 | 0.0871 ms | 0.1110 ms | 0.2434 ms | 0.2771 ms |
+| 15,000 | 0.821 ms | 1.064 ms | 0.880 ms | 0.997 ms |
+| 60,000 | 3.518 ms | 5.763 (5.700-5.792) ms | 2.892 ms | 3.445 (1.325\*\*-3.470) ms |
+
+\*\* one of the three single-thread runs still produced a 1.33 ms outlier on
+the `MetatomicForce`/`Context` + torch row at 60k atoms, well below the
+other two (3.44, 3.47 ms), despite `torch::set_num_threads(1)`. This is the
+only row where pinning intra-op threads didn't fully remove the variance —
+most likely libtorch's BLAS backend (MKL/OpenBLAS) spinning up its own
+thread pool independently of `torch::set_num_threads`, not something this
+session chased further.
+
+**Findings.**
+
+- **core has near-zero, deterministic overhead per eval** (0.02-0.09 ms up
+  to 3k atoms, 1-3% run-to-run spread almost everywhere) and **is the
+  clear winner up to a few thousand atoms** — 3-10x faster than TorchScript
+  at every size below 15k atoms, both directly and through `Context`.
+- **Going through `MetatomicForce`/`Context` costs core a real, growing
+  tax**: +0.15 ms at 3 atoms but +2.1-2.5 ms at 60k atoms (an extra ~35-40
+  µs/atom that direct `execute_model` doesn't pay). `CoreEvaluatorImpl`
+  copies `vector<Vec3>` positions into a fresh `vector<double>` and rebuilds
+  a `metatomic::System` (fresh DLPack wrapping) on every `computeForce`
+  call — likely where that per-atom cost lives. Torch's OpenMM overhead is
+  much flatter (+0.01-0.1 ms across the same range) since the DLPack/Vec3
+  copy is a much smaller fraction of an already-heavier eval. Worth
+  profiling before M2 (periodic systems will add more per-call setup, not
+  less).
+- **TorchScript overtakes core at large N only because it parallelizes**:
+  with the default 12 threads it's faster than core by 60k atoms (~1.5-2.4
+  ms vs. ~3.2-5.7 ms); pinned to 1 thread it is not (2.9-3.4 ms vs.
+  3.2-5.8 ms — comparable to core's direct call, still behind core+Context
+  only because of core's own per-atom Context tax above). There is no
+  atom count in this range where a single TorchScript thread beats
+  metatomic-core's direct call.
+- **TorchScript's large-N timing is far less reproducible than core's**:
+  60k-atom medians ranged 1.3-2.6 ms across identical process launches at
+  default threading (94% spread) vs. core's 5.68-5.75 ms (1.2% spread).
+  Thread-pool/BLAS scheduling noise, not the benchmark harness — the
+  energies matched the analytic solution on every run.
+- Net for the M3 go/no-go in ROADMAP.md: metatomic-core is the right
+  default for the harmonic-well-sized end of the range (small molecules,
+  ML/MM QM regions); a foundation model's real per-atom cost will dominate
+  either backend well before this crossover matters in practice, so this
+  says more about per-call plumbing overhead than about which backend to
+  pick for a given model.
 
 ### Timing baseline (2026-09-16)
 

@@ -88,12 +88,13 @@ cmake --build build
 
 ## Status
 
-Milestone 0: standalone C++ spike on metatomic-core, with TorchScript
-back-compat, builds and passes `ctest` again (needs `metatensor-core`
->=0.2.5; see "Fixed" in [CHANGELOG.md](CHANGELOG.md#unreleased) for the
-build recipe if the vendored `metatensor` checkout is older). The M1
-`MetatomicForce`/`OpenMMMetatomic` C++ sources (`openmmapi/`) build and link
-under the same recipe, but have no Python bindings yet and haven't been
-exercised end-to-end through an OpenMM `Context`. See
-[ROADMAP.md](ROADMAP.md). Timing baselines (2026-09-16, 2026-09-17,
-including scaling with atom count) are in [CHANGELOG.md](CHANGELOG.md).
+Milestone 0 is done; M1 is in progress. `MetatomicForce`/`OpenMMMetatomic`
+now runs end-to-end through a real `OpenMM::Context` (`spike/bench_scaling.cpp`),
+both backends, energy checked against the analytic solution up to 60k atoms
+on non-periodic systems. No Python bindings yet, and periodic systems /
+pair lists are still M2. Building it needs `metatensor-core` >=0.2.5; see
+"Fixed" in [CHANGELOG.md](CHANGELOG.md#unreleased) for the build recipe if
+the vendored `metatensor` checkout is older. See [ROADMAP.md](ROADMAP.md).
+Timing baselines (2026-09-16, 2026-09-17, including scaling with atom count
+and native `MetatomicForce` vs. TorchScript) are in
+[CHANGELOG.md](CHANGELOG.md).

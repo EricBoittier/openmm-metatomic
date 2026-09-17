@@ -18,7 +18,7 @@ Evaluation has two backends:
 | Milestone | Deliverable |
 | --- | --- |
 | M0 | Standalone C++ spike: core harmonic + TorchScript `.pt`, energy and forces vs FD |
-| M1 | CPU `MetatomicForce`, full systems, energy and conservative forces |
+| M1 | CPU `MetatomicForce`, full systems, energy and conservative forces (in progress: builds and validated on non-periodic systems up to 60k atoms, both backends, through a real `Context`; periodic systems and a Python entry point are still open) |
 | M2 | Periodic systems and validated pair lists |
 | M3 | CUDA execution with measured transfer overhead (`CustomCPPForceImpl` host path) |
 | M4 | Zero-copy or low-copy CUDA via DLPack wrapping of OpenMM buffers |
