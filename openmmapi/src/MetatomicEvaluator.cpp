@@ -18,13 +18,14 @@
 #include <sstream>
 #include <unordered_set>
 
+#ifdef OPENMM_METATOMIC_USE_VESIN
+#include <vesin.h>
+#endif
+
 #ifdef OPENMM_METATOMIC_TORCH
 #include <torch/script.h>
 #include <metatensor/torch.hpp>
 #include <metatomic/torch.hpp>
-#ifdef OPENMM_METATOMIC_USE_VESIN
-#include <vesin.h>
-#endif
 #endif
 
 using namespace OpenMMMetatomic;
@@ -74,44 +75,26 @@ void loadCorePlugins(const string& extensionsDirectory) {
     }
 }
 
-#ifdef OPENMM_METATOMIC_TORCH
-torch::Device selectTorchDevice(const vector<string>& supported, const string& desired) {
-    torch::optional<string> requested = torch::nullopt;
-    if (!desired.empty())
-        requested = desired;
-    const auto type = metatomic_torch::pick_device(supported, requested);
-    if (requested.has_value())
-        return torch::Device(*requested);
-    return torch::Device(type);
-}
-
-torch::Dtype parseDtype(const string& name) {
-    if (name == "float64")
-        return torch::kFloat64;
-    if (name == "float32")
-        return torch::kFloat32;
-    throw OpenMMException("MetatomicForce: unsupported model dtype '" + name + "'");
-}
-
-void addNeighborList(
-    metatomic_torch::System& system,
-    const metatomic_torch::NeighborListOptions& request,
-    const vector<Vec3>& positions,
-    const Vec3 box[3],
-    bool periodic,
-    bool checkConsistency,
-    torch::Device device,
-    torch::Dtype dtype
-) {
-    const int n = static_cast<int>(positions.size());
-    const double cutoff = request->engine_cutoff("nm");
-    const bool full = request->full_list();
-    const double cutoff2 = cutoff * cutoff;
-
+// Backend-agnostic pair list: 5 int32 columns per pair (first_atom,
+// second_atom, cell_shift_a/b/c) and 3 double columns (the pair vector),
+// used to build a metatensor(_torch) TensorBlock for either backend.
+struct RawNeighborPairs {
     vector<int32_t> samples;
     vector<double> vectors;
-    samples.reserve(static_cast<size_t>(n) * 10);
-    vectors.reserve(static_cast<size_t>(n) * 6);
+
+    size_t size() const {
+        return samples.size() / 5;
+    }
+};
+
+RawNeighborPairs computeNeighborPairs(
+    const vector<Vec3>& positions, const Vec3 box[3], bool periodic, double cutoff, bool full
+) {
+    const int n = static_cast<int>(positions.size());
+    const double cutoff2 = cutoff * cutoff;
+    RawNeighborPairs out;
+    out.samples.reserve(static_cast<size_t>(n) * 10);
+    out.vectors.reserve(static_cast<size_t>(n) * 6);
 
 #ifdef OPENMM_METATOMIC_USE_VESIN
     {
@@ -154,17 +137,17 @@ void addNeighborList(
             vesin_free(&neighbors);
             throw OpenMMException("MetatomicForce: " + message);
         }
-        samples.resize(neighbors.length * 5);
-        vectors.resize(neighbors.length * 3);
+        out.samples.resize(neighbors.length * 5);
+        out.vectors.resize(neighbors.length * 3);
         for (size_t k = 0; k < neighbors.length; k++) {
-            samples[5 * k + 0] = static_cast<int32_t>(neighbors.pairs[k][0]);
-            samples[5 * k + 1] = static_cast<int32_t>(neighbors.pairs[k][1]);
-            samples[5 * k + 2] = neighbors.shifts ? neighbors.shifts[k][0] : 0;
-            samples[5 * k + 3] = neighbors.shifts ? neighbors.shifts[k][1] : 0;
-            samples[5 * k + 4] = neighbors.shifts ? neighbors.shifts[k][2] : 0;
-            vectors[3 * k + 0] = neighbors.vectors[k][0];
-            vectors[3 * k + 1] = neighbors.vectors[k][1];
-            vectors[3 * k + 2] = neighbors.vectors[k][2];
+            out.samples[5 * k + 0] = static_cast<int32_t>(neighbors.pairs[k][0]);
+            out.samples[5 * k + 1] = static_cast<int32_t>(neighbors.pairs[k][1]);
+            out.samples[5 * k + 2] = neighbors.shifts ? neighbors.shifts[k][0] : 0;
+            out.samples[5 * k + 3] = neighbors.shifts ? neighbors.shifts[k][1] : 0;
+            out.samples[5 * k + 4] = neighbors.shifts ? neighbors.shifts[k][2] : 0;
+            out.vectors[3 * k + 0] = neighbors.vectors[k][0];
+            out.vectors[3 * k + 1] = neighbors.vectors[k][1];
+            out.vectors[3 * k + 2] = neighbors.vectors[k][2];
         }
         vesin_free(&neighbors);
     }
@@ -193,14 +176,14 @@ void addNeighborList(
         const Vec3 delta = positions[j] - positions[i] + shift;
         if (delta.dot(delta) > cutoff2)
             return;
-        samples.push_back(i);
-        samples.push_back(j);
-        samples.push_back(sa);
-        samples.push_back(sb);
-        samples.push_back(sc);
-        vectors.push_back(delta[0]);
-        vectors.push_back(delta[1]);
-        vectors.push_back(delta[2]);
+        out.samples.push_back(i);
+        out.samples.push_back(j);
+        out.samples.push_back(sa);
+        out.samples.push_back(sb);
+        out.samples.push_back(sc);
+        out.vectors.push_back(delta[0]);
+        out.vectors.push_back(delta[1]);
+        out.vectors.push_back(delta[2]);
     };
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n; j++) {
@@ -211,13 +194,78 @@ void addNeighborList(
         }
     }
 #endif
+    return out;
+}
 
-    const int64_t nPairs = static_cast<int64_t>(samples.size() / 5);
+// Core backend: attach a pair list to a metatomic::System (C++ API) using
+// the same raw pair computation as the torch backend below.
+void addPairsCore(
+    metatomic::System& system,
+    const metatomic::PairListOptions& options,
+    const vector<Vec3>& positions,
+    const Vec3 box[3],
+    bool periodic,
+    double cutoffNm,
+    bool checkConsistency
+) {
+    const auto raw = computeNeighborPairs(positions, box, periodic, cutoffNm, options.full_list());
+    const auto nPairs = static_cast<uintptr_t>(raw.size());
+
+    const vector<string> sampleNames = {
+        "first_atom", "second_atom", "cell_shift_a", "cell_shift_b", "cell_shift_c"
+    };
+    metatensor::Labels samples = checkConsistency
+        ? metatensor::Labels(sampleNames, raw.samples.data(), nPairs)
+        : metatensor::Labels(sampleNames, raw.samples.data(), nPairs, metatensor::assume_unique{});
+    auto xyz = metatensor::Labels({"xyz"}, {{0}, {1}, {2}});
+    auto properties = metatensor::Labels({"distance"}, {{0}});
+
+    auto values = make_unique<metatensor::SimpleDataArray<double>>(
+        vector<uintptr_t>{nPairs, 3, 1}, raw.vectors
+    );
+    metatensor::TensorBlock block(std::move(values), samples, {xyz}, properties);
+    system.add_pairs(options, std::move(block));
+}
+
+#ifdef OPENMM_METATOMIC_TORCH
+torch::Device selectTorchDevice(const vector<string>& supported, const string& desired) {
+    torch::optional<string> requested = torch::nullopt;
+    if (!desired.empty())
+        requested = desired;
+    const auto type = metatomic_torch::pick_device(supported, requested);
+    if (requested.has_value())
+        return torch::Device(*requested);
+    return torch::Device(type);
+}
+
+torch::Dtype parseDtype(const string& name) {
+    if (name == "float64")
+        return torch::kFloat64;
+    if (name == "float32")
+        return torch::kFloat32;
+    throw OpenMMException("MetatomicForce: unsupported model dtype '" + name + "'");
+}
+
+void addNeighborList(
+    metatomic_torch::System& system,
+    const metatomic_torch::NeighborListOptions& request,
+    const vector<Vec3>& positions,
+    const Vec3 box[3],
+    bool periodic,
+    bool checkConsistency,
+    torch::Device device,
+    torch::Dtype dtype
+) {
+    const double cutoff = request->engine_cutoff("nm");
+    const bool full = request->full_list();
+    auto raw = computeNeighborPairs(positions, box, periodic, cutoff, full);
+    const int64_t nPairs = static_cast<int64_t>(raw.size());
+
     auto sampleTensor = torch::from_blob(
-        samples.data(), {nPairs, 5}, torch::TensorOptions().dtype(torch::kInt32)
+        raw.samples.data(), {nPairs, 5}, torch::TensorOptions().dtype(torch::kInt32)
     ).clone().to(device);
     auto vectorTensor = torch::from_blob(
-        vectors.data(), {nPairs, 3, 1}, torch::TensorOptions().dtype(torch::kFloat64)
+        raw.vectors.data(), {nPairs, 3, 1}, torch::TensorOptions().dtype(torch::kFloat64)
     ).clone().to(device, dtype);
 
     const vector<string> sampleNames = {
@@ -269,6 +317,13 @@ public:
                 1.0, vector<double>(3 * config.atomicTypes.size(), 0.0)
             );
         }
+        else if (config.modelPath == "harmonic-nl") {
+            // Same built-in model as "harmonic", but requests a pair list --
+            // for testing the core backend's pair-list support itself.
+            model = make_unique<NeighborHarmonicModel>(
+                1.0, vector<double>(3 * config.atomicTypes.size(), 0.0), 0.3
+            );
+        }
         else {
             try {
                 model = make_unique<metatomic::ExternalModel>(
@@ -311,14 +366,15 @@ public:
             typesHost[i] = static_cast<int32_t>(type);
         }
 
-        const auto pairLists = model->requested_pair_lists();
+        pairLists = model->requested_pair_lists();
         info_.neighborListRequests = static_cast<int>(pairLists.size());
-        if (!pairLists.empty()) {
-            throw OpenMMException(
-                "MetatomicForce: core backend does not yet implement pair lists "
-                "(" + to_string(pairLists.size()) + " requested)"
-            );
-        }
+        // PairListOptions::cutoff() is in "the length unit of the model";
+        // compute() always builds its System in "nm" (see makeSystem below),
+        // so convert once here rather than on every compute() call.
+        const double lengthToNm = metatomic::unit_conversion_factor(info_.lengthUnit, "nm");
+        pairListCutoffsNm.reserve(pairLists.size());
+        for (const auto& request : pairLists)
+            pairListCutoffsNm.push_back(request.cutoff() * lengthToNm);
         for (const auto& input : model->requested_inputs()) {
             info_.requestedInputs.push_back(input.name());
             throw OpenMMException(
@@ -371,8 +427,11 @@ public:
             }
         }
         try {
+            auto system = makeSystem("nm", typesHost, pos, periodic, cell);
+            for (size_t i = 0; i < pairLists.size(); i++)
+                addPairsCore(system, pairLists[i], positions, box, periodic, pairListCutoffsNm[i], checkConsistency);
             vector<metatomic::System> systems;
-            systems.push_back(makeSystem("nm", typesHost, pos, periodic, cell));
+            systems.push_back(std::move(system));
             auto evaluated = evaluateCore(*model, systems, checkConsistency);
             MetatomicEvaluator::Result result;
             result.energy = evaluated.energy;
@@ -390,6 +449,8 @@ public:
 
     mutable unique_ptr<metatomic::BaseModel> model;
     vector<int32_t> typesHost;
+    vector<metatomic::PairListOptions> pairLists;
+    vector<double> pairListCutoffsNm;
     bool checkConsistency = false;
     bool periodic = false;
     MetatomicEvaluator::ModelInfo info_;

@@ -16,9 +16,14 @@ Backends
 
 ``setBackend("auto")`` selects torch for ``.pt`` / ``.pth`` and core otherwise.
 
-The gallery includes **PET-MAD-XS** (`lab-cosmo/upet`_) and a **SOAP-BPNN**
+The gallery includes **PET-MAD-XS** (`lab-cosmo/upet`_), a **SOAP-BPNN**
 twin of metatrain ``soap_bpnn`` (torch-spex SOAP + per-species SiLU MLP)
-run in both metatomic-core C++ and TorchScript.
+run in both metatomic-core C++ and TorchScript, and a **scaling** example
+sweeping 3 to 60,000 atoms to see where setup vs. evaluation cost actually
+dominates. The native ``MetatomicForce`` plugin's own pair-list support
+(both backends, via ``vesin``) and its timing against a real
+``OpenMM::Context`` are C++-only (no Python binding yet) and live in
+``ctest``, not this gallery — see CHANGELOG.md and ROADMAP.md.
 
 .. _lab-cosmo/upet: https://huggingface.co/lab-cosmo/upet
 

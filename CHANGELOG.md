@@ -7,6 +7,38 @@ All notable changes to openmm-metatomic are documented here, following
 
 ### Added
 
+- **M2: pair-list support for both backends.** `CMakeLists.txt` now detects
+  and links `vesin` (`pip install vesin`; falls back to the O(N^2) loop with
+  a `-- vesin not found` status message if missing) via a new
+  `OPENMM_METATOMIC_VESIN` option (on by default). This activates two
+  things at once:
+  - The torch backend's neighbor-list construction (`addNeighborList` in
+    `MetatomicEvaluator.cpp`) had a real `vesin`-backed code path since M0,
+    guarded by `OPENMM_METATOMIC_USE_VESIN` — but nothing ever defined that
+    macro, so every torch model requesting a neighbor list (PET-MAD-XS
+    included) has been running the O(N^2)/periodic-image fallback the whole
+    time, untested against the real thing until now.
+  - The core backend previously hard-error'd on any model that called
+    `requested_pair_lists()` ("core backend does not yet implement pair
+    lists"). It now builds and attaches pair lists the same way, via
+    `metatomic::System::add_pairs`/`System::pairs` (the C++, non-torch
+    equivalent of the torch backend's `add_neighbor_list`).
+  - Both paths share one new backend-agnostic helper,
+    `computeNeighborPairs()` (vesin or the naive fallback, returning flat
+    `{first_atom, second_atom, cell_shift_a/b/c}` samples and pair vectors),
+    that the torch and core evaluators each wrap in their own
+    metatensor(_torch) `TensorBlock` construction. `HarmonicModel.h` gained
+    a `NeighborHarmonicModel` (core, exposed as the built-in model
+    `"harmonic-nl"`) and `spike/export_pairlist_torch.py` exports a
+    matching TorchScript twin: both add a pair-list contribution multiplied
+    by zero to the same independent-atom harmonic well, so they share its
+    analytic solution — this isolates "did the pair list round-trip
+    correctly" from "is the physics right". Validated periodic and
+    non-periodic, both backends, in the new `spike/test_pairlist.cpp`
+    (`test-pairlist` in `ctest`).
+  - Not done: Verlet-list skin/caching across steps (`vesin`'s pairs are
+    rebuilt from scratch on every `computeForce` call, same as before this
+    change) — see ROADMAP.md Phase 3.
 - `spike/bench_scaling.cpp` (`openmm-metatomic-bench-scaling`, built whenever
   `OPENMM_DIR` is set): the first timing that actually exercises
   `MetatomicForce` through a real `OpenMM::Context` (`CustomCPPForceImpl` ->
