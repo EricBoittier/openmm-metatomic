@@ -13,6 +13,7 @@
 #include <iostream>
 #include <memory>
 #include <numeric>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -60,6 +61,23 @@ inline Geometry waterVacuum() {
         OpenMM::Vec3(0.0, 0.0, 0.096),
         OpenMM::Vec3(0.0, 0.093, -0.024),
     };
+    return g;
+}
+
+// Independent-atom well at arbitrary N (same cloud as spike/bench_scaling.cpp).
+inline Geometry harmonicCloud(int nAtoms, unsigned seed = 1) {
+    Geometry g;
+    if (nAtoms <= 0)
+        throw std::runtime_error("harmonicCloud needs nAtoms > 0");
+    static const int table[3] = {1, 6, 8};
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<double> dist(-0.3, 0.3);
+    g.types.resize(static_cast<size_t>(nAtoms));
+    g.positions.resize(static_cast<size_t>(nAtoms));
+    for (int i = 0; i < nAtoms; i++) {
+        g.types[i] = table[i % 3];
+        g.positions[i] = OpenMM::Vec3(dist(rng), dist(rng), dist(rng));
+    }
     return g;
 }
 
@@ -186,6 +204,53 @@ inline OpenMM::Platform& platformByName(const std::string& name) {
     return OpenMM::Platform::getPlatformByName(name);
 }
 
+inline double medianMs(std::vector<double> samples) {
+    if (samples.empty())
+        return 0.0;
+    std::sort(samples.begin(), samples.end());
+    return samples[samples.size() / 2];
+}
+
+inline void bindGeometry(OpenMM::Context& context, const Geometry& geom) {
+    context.setPositions(geom.positions);
+    if (geom.periodic)
+        context.setPeriodicBoxVectors(geom.a, geom.b, geom.c);
+}
+
+// Warm the same Context that will be timed: JIT/autograd/NL buffers live on
+// the Context, so a fresh one always looks like a load, not a step.
+inline void warmupContext(OpenMM::Context& context, OpenMM::Integrator& integrator,
+                          int warmupEvals, int warmupSteps) {
+    for (int i = 0; i < std::max(0, warmupEvals); i++)
+        context.getState(OpenMM::State::Energy | OpenMM::State::Forces);
+    if (warmupSteps > 0)
+        integrator.step(warmupSteps);
+}
+
+inline double timeEvalMedian(OpenMM::Context& context, int repeats) {
+    std::vector<double> samples;
+    samples.reserve(static_cast<size_t>(std::max(1, repeats)));
+    for (int i = 0; i < std::max(1, repeats); i++) {
+        const auto t0 = std::chrono::steady_clock::now();
+        context.getState(OpenMM::State::Energy | OpenMM::State::Forces);
+        const auto t1 = std::chrono::steady_clock::now();
+        samples.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+    }
+    return medianMs(std::move(samples));
+}
+
+inline double timeSteps(OpenMM::Integrator& integrator, int nSteps) {
+    if (nSteps <= 0)
+        return 0.0;
+    const auto t0 = std::chrono::steady_clock::now();
+    integrator.step(nSteps);
+    const auto t1 = std::chrono::steady_clock::now();
+    return std::chrono::duration<double, std::milli>(t1 - t0).count()
+        / static_cast<double>(nSteps);
+}
+
+// Honest per-step cost: one Context, warmup, median getState, then
+// Integrator::step(N) with no getState in the timed loop.
 inline MdResult runMd(
     const Geometry& geom,
     const ForceConfig& config,
@@ -196,6 +261,8 @@ inline MdResult runMd(
     double temperature,
     double friction,
     int evalRepeats,
+    int warmupEvals = 8,
+    int warmupSteps = 10,
     int seed = 1
 ) {
     MdResult out;
@@ -204,38 +271,19 @@ inline MdResult runMd(
 
     {
         std::unique_ptr<OpenMM::System> system(makeSystem(geom, config));
-        OpenMM::VerletIntegrator evalIntegrator(dtPs);
-        OpenMM::Context evalContext(*system, evalIntegrator, platform);
-        evalContext.setPositions(geom.positions);
-        if (geom.periodic)
-            evalContext.setPeriodicBoxVectors(geom.a, geom.b, geom.c);
-        evalContext.getState(OpenMM::State::Energy | OpenMM::State::Forces);
-        const auto t0 = std::chrono::steady_clock::now();
-        for (int i = 0; i < evalRepeats; i++)
-            evalContext.getState(OpenMM::State::Energy | OpenMM::State::Forces);
-        const auto t1 = std::chrono::steady_clock::now();
-        out.evalMs = std::chrono::duration<double, std::milli>(t1 - t0).count()
-            / std::max(1, evalRepeats);
-    }
-
-    if (nveSteps > 0) {
-        std::unique_ptr<OpenMM::System> system(makeSystem(geom, config));
         OpenMM::VerletIntegrator integrator(dtPs);
         OpenMM::Context context(*system, integrator, platform);
-        context.setPositions(geom.positions);
-        if (geom.periodic)
-            context.setPeriodicBoxVectors(geom.a, geom.b, geom.c);
+        bindGeometry(context, geom);
         context.setVelocitiesToTemperature(temperature, seed);
-        out.nve.push_back(readState(context, n, false));
-        const auto s0 = std::chrono::steady_clock::now();
-        for (int i = 0; i < nveSteps; i++) {
-            integrator.step(1);
-            out.nve.push_back(readState(context, n, false));
+        warmupContext(context, integrator, warmupEvals, warmupSteps);
+        out.evalMs = timeEvalMedian(context, evalRepeats);
+        if (nveSteps > 0) {
+            const auto e0 = readState(context, n, false);
+            out.nveMsPerStep = timeSteps(integrator, nveSteps);
+            const auto e1 = readState(context, n, false);
+            out.nve = {e0, e1};
+            out.nveDrift = totalEnergy(e1) - totalEnergy(e0);
         }
-        const auto s1 = std::chrono::steady_clock::now();
-        out.nveMsPerStep = std::chrono::duration<double, std::milli>(s1 - s0).count()
-            / nveSteps;
-        out.nveDrift = totalEnergy(out.nve.back()) - totalEnergy(out.nve.front());
     }
 
     if (nvtSteps > 0) {
@@ -243,19 +291,13 @@ inline MdResult runMd(
         nvtSystem->addForce(new OpenMM::CMMotionRemover());
         OpenMM::LangevinMiddleIntegrator integrator(temperature, friction, dtPs);
         OpenMM::Context context(*nvtSystem, integrator, platform);
-        context.setPositions(geom.positions);
-        if (geom.periodic)
-            context.setPeriodicBoxVectors(geom.a, geom.b, geom.c);
+        bindGeometry(context, geom);
         context.setVelocitiesToTemperature(temperature, seed + 1);
-        out.nvt.push_back(readState(context, n, true));
-        const auto s0 = std::chrono::steady_clock::now();
-        for (int i = 0; i < nvtSteps; i++) {
-            integrator.step(1);
-            out.nvt.push_back(readState(context, n, true));
-        }
-        const auto s1 = std::chrono::steady_clock::now();
-        out.nvtMsPerStep = std::chrono::duration<double, std::milli>(s1 - s0).count()
-            / nvtSteps;
+        warmupContext(context, integrator, warmupEvals, warmupSteps);
+        const auto e0 = readState(context, n, true);
+        out.nvtMsPerStep = timeSteps(integrator, nvtSteps);
+        const auto e1 = readState(context, n, true);
+        out.nvt = {e0, e1};
     }
     return out;
 }
@@ -270,7 +312,7 @@ inline void printTrace(const std::string& label, const std::vector<StepRecord>& 
         tMean += r.temperature;
     tMean /= static_cast<double>(trace.size());
     std::cout << label
-              << "  steps=" << (trace.size() - 1)
+              << "  samples=" << (trace.size() - 1)
               << "  dt=" << dtPs << " ps"
               << "  E0=" << e0
               << "  E1=" << e1

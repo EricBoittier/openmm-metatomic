@@ -24,7 +24,10 @@ The gallery covers these layers, in ``plot_NN_*.py`` order:
    ``vesin`` neighbor list, to see where ``createSystem`` vs. per-step
    evaluation cost actually dominates.
 6. **Native ``MetatomicForce``** (``plot_11``–``plot_13``) — the SWIG wrapper
-   around the C++ plugin. Vacuum NVE/NVT (harmonic, PET-MAD-XS, SOAP-BPNN,
-   toluene), a periodic water box, and a settings matrix (backend, device,
-   consistency, neighbor list, platform). Matching C++ drivers:
-   ``openmm-metatomic-run-md`` and ``openmm-metatomic-bench-settings``.
+   around the C++ plugin. Vacuum NVE/NVT on a 3,000-atom harmonic cloud plus
+   PET-MAD-XS / SOAP-BPNN / toluene, a 1,000-water harmonic-nl box and a
+   32-water PET-MAD box, and a settings matrix at 3k–60k (harmonic) /
+   256–5,000 waters (harmonic-nl) / 32 and 96 waters (PET-MAD). Matching
+   C++ drivers: ``openmm-metatomic-run-md`` and
+   ``openmm-metatomic-bench-settings``. Timing is a hot Context (warmup,
+   median ``getState``, then ``Integrator.step(N)``).

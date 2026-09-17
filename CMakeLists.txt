@@ -424,13 +424,14 @@ if(OPENMM_DIR)
 
     add_test(
         NAME run-md-smoke
-        COMMAND openmm-metatomic-run-md --model harmonic --backend core --nve 5 --nvt 5 --eval 2 --platform Reference
+        COMMAND openmm-metatomic-run-md --model harmonic --backend core --nve 5 --nvt 5 --eval 2 --warmup-eval 1 --warmup-step 1 --platform Reference
     )
     add_test(
         NAME bench-settings-smoke
         COMMAND openmm-metatomic-bench-settings
             --models harmonic --backends core --platforms Reference
-            --nl none --nve 2 --nvt 2 --eval 2
+            --nl none --nve 2 --nvt 2 --eval 2 --warmup-eval 1 --warmup-step 1
+            --harmonic-atoms 3
     )
 
     add_subdirectory(python)

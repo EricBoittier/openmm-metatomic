@@ -1,0 +1,88 @@
+case                                                           N     eval/ms      nve/ms      nvt/ms     nve_drift
+harmonic/core/cpu/Reference/nocon/none/N3000                3000       0.847       1.209       2.179        0.0000
+harmonic/torch/cpu/Reference/nocon/none/N3000               3000       0.358       0.380       0.882        0.0000
+harmonic/torch/cuda/Reference/nocon/none/N3000            skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+harmonic/core/cpu/Reference/nocon/none/N15000              15000       3.802       5.195       5.856        0.0000
+harmonic/torch/cpu/Reference/nocon/none/N15000             15000       1.017       3.122       2.693        0.0000
+harmonic/torch/cuda/Reference/nocon/none/N15000           skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+harmonic/core/cpu/Reference/nocon/none/N60000              60000      23.730      26.079      27.829        0.0000
+harmonic/torch/cpu/Reference/nocon/none/N60000             60000       6.101       8.474      23.990        0.0000
+harmonic/torch/cuda/Reference/nocon/none/N60000           skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+harmonic-nl/core/cpu/Reference/nocon/vesin/N768              768       1.210       1.197       1.204        0.0000
+harmonic-nl/core/cpu/Reference/nocon/naive/N768              768    1044.348    1066.740    1095.036        0.0000
+harmonic-nl/torch/cpu/Reference/nocon/vesin/N768             768       1.293       1.895       1.706        0.0000
+harmonic-nl/torch/cpu/Reference/nocon/naive/N768             768    1080.087    1064.774    1050.551        0.0000
+harmonic-nl/torch/cuda/Reference/nocon/vesin/N768         skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+harmonic-nl/torch/cuda/Reference/nocon/naive/N768         skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+harmonic-nl/core/cpu/Reference/nocon/vesin/N3000            3000       3.093       4.005       3.705       -0.0000
+harmonic-nl/torch/cpu/Reference/nocon/vesin/N3000           3000       4.893       3.905       3.938       -0.0000
+harmonic-nl/torch/cuda/Reference/nocon/vesin/N3000        skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+harmonic-nl/core/cpu/Reference/nocon/vesin/N15000          15000      11.329      13.320      14.917       -0.0000
+harmonic-nl/torch/cpu/Reference/nocon/vesin/N15000         15000      12.534      17.783      16.957       -0.0000
+harmonic-nl/torch/cuda/Reference/nocon/vesin/N15000       skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+soap-bpnn/torch/cpu/Reference/nocon/vesin/N96                 96       3.684       5.356       4.936        0.0179
+soap-bpnn/torch/cuda/Reference/nocon/vesin/N96            skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+pet-mad-box/torch/cpu/Reference/nocon/vesin/N96               96      55.394      68.796      52.788        1.3818
+pet-mad-box/torch/cuda/Reference/nocon/vesin/N96              96      17.152      23.624      12.138        1.3857
+pet-mad-box/torch/cpu/Reference/nocon/vesin/N288             288      98.099     107.132      99.110        4.0793
+pet-mad-box/torch/cuda/Reference/nocon/vesin/N288            288      16.878      16.582      35.714        4.0952
+
+
+case                                                           N     eval/ms      nve/ms      nvt/ms     nve_drift
+harmonic/core/cpu/Reference/nocon/none/N3000                3000       0.839       0.860       0.973        0.0000
+harmonic/torch/cpu/Reference/nocon/none/N3000               3000       0.339       0.367       0.458        0.0000
+harmonic/torch/cuda/Reference/nocon/none/N3000            skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+harmonic/core/cpu/Reference/nocon/none/N15000              15000       3.323       3.414       3.920        0.0000
+harmonic/torch/cpu/Reference/nocon/none/N15000             15000       1.136       1.047       2.347        0.0000
+harmonic/torch/cuda/Reference/nocon/none/N15000           skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+harmonic/core/cpu/Reference/nocon/none/N60000              60000      15.124      15.026      17.552        0.0000
+harmonic/torch/cpu/Reference/nocon/none/N60000             60000       2.085       2.499       6.082        0.0000
+harmonic/torch/cuda/Reference/nocon/none/N60000           skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+harmonic-nl/core/cpu/Reference/nocon/vesin/N768              768       1.087       1.314       1.478        0.0000
+harmonic-nl/core/cpu/Reference/nocon/naive/N768              768     998.088     975.487     975.338        0.0000
+harmonic-nl/torch/cpu/Reference/nocon/vesin/N768             768       1.228       1.290       1.691        0.0000
+harmonic-nl/torch/cpu/Reference/nocon/naive/N768             768     966.914     970.805     973.875        0.0000
+harmonic-nl/torch/cuda/Reference/nocon/vesin/N768         skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+harmonic-nl/torch/cuda/Reference/nocon/naive/N768         skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+harmonic-nl/core/cpu/Reference/nocon/vesin/N3000            3000       3.127       2.987       2.981       -0.0000
+harmonic-nl/torch/cpu/Reference/nocon/vesin/N3000           3000       3.288       3.554       3.684       -0.0000
+harmonic-nl/torch/cuda/Reference/nocon/vesin/N3000        skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+harmonic-nl/core/cpu/Reference/nocon/vesin/N15000          15000      10.535      10.705      11.813       -0.0000
+harmonic-nl/torch/cpu/Reference/nocon/vesin/N15000         15000      13.158      14.706      12.013       -0.0000
+harmonic-nl/torch/cuda/Reference/nocon/vesin/N15000       skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+soap-bpnn/torch/cpu/Reference/nocon/vesin/N96                 96       4.138       4.266       5.634        0.0179
+soap-bpnn/torch/cuda/Reference/nocon/vesin/N96            skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+pet-mad-box/torch/cpu/Reference/nocon/vesin/N96               96      47.090      47.103      47.403        1.3818
+pet-mad-box/torch/cuda/Reference/nocon/vesin/N96              96      19.316      20.074      25.404        1.3855
+pet-mad-box/torch/cpu/Reference/nocon/vesin/N288             288     105.202     146.675     137.930        4.0797
+pet-mad-box/torch/cuda/Reference/nocon/vesin/N288            288      16.974      16.887      34.243        4.0958
+
+
+case                                                           N     eval/ms      nve/ms      nvt/ms     nve_drift
+harmonic/core/cpu/Reference/nocon/none/N3000                3000       0.819       0.840       0.937        0.0000
+harmonic/torch/cpu/Reference/nocon/none/N3000               3000       0.342       0.356       0.468        0.0000
+harmonic/torch/cuda/Reference/nocon/none/N3000            skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+harmonic/core/cpu/Reference/nocon/none/N15000              15000       3.361       3.426       3.991        0.0000
+harmonic/torch/cpu/Reference/nocon/none/N15000             15000       0.905       1.578       1.456        0.0000
+harmonic/torch/cuda/Reference/nocon/none/N15000           skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+harmonic/core/cpu/Reference/nocon/none/N60000              60000      15.369      15.417      17.228        0.0000
+harmonic/torch/cpu/Reference/nocon/none/N60000             60000       2.937       3.580       4.954        0.0000
+harmonic/torch/cuda/Reference/nocon/none/N60000           skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+harmonic-nl/core/cpu/Reference/nocon/vesin/N768              768       1.249       1.366       1.286        0.0000
+harmonic-nl/core/cpu/Reference/nocon/naive/N768              768    1014.409     982.423     967.540        0.0000
+harmonic-nl/torch/cpu/Reference/nocon/vesin/N768             768       1.495       1.466       1.366        0.0000
+harmonic-nl/torch/cpu/Reference/nocon/naive/N768             768     967.714     968.359     954.666        0.0000
+harmonic-nl/torch/cuda/Reference/nocon/vesin/N768         skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+harmonic-nl/torch/cuda/Reference/nocon/naive/N768         skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+harmonic-nl/core/cpu/Reference/nocon/vesin/N3000            3000       2.695       2.856       3.000       -0.0000
+harmonic-nl/torch/cpu/Reference/nocon/vesin/N3000           3000       3.593       4.483       3.494       -0.0000
+harmonic-nl/torch/cuda/Reference/nocon/vesin/N3000        skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+harmonic-nl/core/cpu/Reference/nocon/vesin/N15000          15000      10.267      10.251      11.069       -0.0000
+harmonic-nl/torch/cpu/Reference/nocon/vesin/N15000         15000      10.832      11.581      16.675       -0.0000
+harmonic-nl/torch/cuda/Reference/nocon/vesin/N15000       skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+soap-bpnn/torch/cpu/Reference/nocon/vesin/N96                 96       3.918       4.222       4.411        0.0179
+soap-bpnn/torch/cuda/Reference/nocon/vesin/N96            skipped (failed to find requested device (cuda): it is either not supported by this model or not available on this machine)
+pet-mad-box/torch/cpu/Reference/nocon/vesin/N96               96      44.530      41.436      33.848        1.3818
+pet-mad-box/torch/cuda/Reference/nocon/vesin/N96              96      13.033      12.918      12.712        1.3856
+pet-mad-box/torch/cpu/Reference/nocon/vesin/N288             288      95.946     100.425     113.788        4.0793
+pet-mad-box/torch/cuda/Reference/nocon/vesin/N288            288      15.650      15.780      28.209        4.0956

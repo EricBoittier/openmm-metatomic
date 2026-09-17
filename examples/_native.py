@@ -61,6 +61,23 @@ def water_box(n_molecules: int, spacing: float = SPACING_NM):
     )
 
 
+def harmonic_cloud(n_atoms: int, seed: int = 1):
+    rng = np.random.default_rng(seed)
+    types = np.array([1, 6, 8] * ((n_atoms + 2) // 3), dtype=np.int32)[:n_atoms]
+    positions = rng.uniform(-0.3, 0.3, size=(n_atoms, 3))
+    return types, positions
+
+
+def save_figure(fig, script_path, suffix: str = ""):
+    out = Path(script_path).resolve().parent / "plots"
+    out.mkdir(exist_ok=True)
+    name = Path(script_path).stem + suffix + ".png"
+    dest = out / name
+    fig.savefig(dest, dpi=140)
+    print(f"wrote {dest}")
+    return dest
+
+
 def periodic_topology(types: Sequence[int], box_nm: np.ndarray):
     import openmm.unit as unit
 
@@ -211,3 +228,21 @@ def harmonic_pt() -> Optional[Path]:
 def pairlist_pt() -> Optional[Path]:
     path = repo_root() / "build" / "pairlist.pt"
     return path if path.is_file() else None
+
+
+def ensure_harmonic_pt(n_atoms: int) -> Optional[Path]:
+    root = repo_root()
+    out = root / "build" / "scaling" / f"harmonic-{n_atoms}.pt"
+    if out.is_file():
+        return out
+    script = root / "spike" / "export_scaling_models.py"
+    if not script.is_file():
+        return None
+    out.parent.mkdir(parents=True, exist_ok=True)
+    import subprocess
+
+    subprocess.run(
+        [sys.executable, str(script), str(out.parent), str(n_atoms)],
+        check=True,
+    )
+    return out if out.is_file() else None

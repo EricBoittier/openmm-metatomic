@@ -21,9 +21,12 @@ int main(int argc, char** argv) {
         std::string systemName = "water";
         std::string pdb;
         int nMol = 8;
+        int nAtoms = 0;
         int nveSteps = 200;
         int nvtSteps = 100;
-        int evalRepeats = 10;
+        int evalRepeats = 11;
+        int warmupEvals = 8;
+        int warmupSteps = 10;
         double dt = 0.0005;
         double temperature = 300.0;
         double friction = 1.0;
@@ -44,9 +47,12 @@ int main(int argc, char** argv) {
             else if (arg == "--system") { systemName = need(i); i++; }
             else if (arg == "--pdb") { pdb = need(i); i++; }
             else if (arg == "--n-mol") { nMol = std::stoi(need(i)); i++; }
+            else if (arg == "--n-atoms") { nAtoms = std::stoi(need(i)); i++; }
             else if (arg == "--nve") { nveSteps = std::stoi(need(i)); i++; }
             else if (arg == "--nvt") { nvtSteps = std::stoi(need(i)); i++; }
             else if (arg == "--eval") { evalRepeats = std::stoi(need(i)); i++; }
+            else if (arg == "--warmup-eval") { warmupEvals = std::stoi(need(i)); i++; }
+            else if (arg == "--warmup-step") { warmupSteps = std::stoi(need(i)); i++; }
             else if (arg == "--dt") { dt = std::stod(need(i)); i++; }
             else if (arg == "--temperature") { temperature = std::stod(need(i)); i++; }
             else if (arg == "--friction") { friction = std::stod(need(i)); i++; }
@@ -55,9 +61,10 @@ int main(int argc, char** argv) {
             else if (arg == "--help" || arg == "-h") {
                 std::cout <<
                     "openmm-metatomic-run-md --model harmonic|harmonic-nl|<file.pt>\n"
-                    "  --system water|water-box|pdb   --pdb file.pdb   --n-mol 8\n"
+                    "  --system water|water-box|cloud|pdb   --pdb file.pdb   --n-mol 8   --n-atoms 3000\n"
                     "  --backend auto|core|torch  --device cpu|cuda  --platform CPU|Reference\n"
-                    "  --nve 200 --nvt 100 --dt 0.0005 --eval 10 [--check-consistency] [--periodic]\n";
+                    "  --nve 200 --nvt 100 --dt 0.0005 --eval 11 --warmup-eval 8 --warmup-step 10\n"
+                    "  [--check-consistency] [--periodic]\n";
                 return 0;
             }
             else {
@@ -83,6 +90,9 @@ int main(int argc, char** argv) {
                 geom.c = OpenMM::Vec3(0, 0, 1.5);
             }
         }
+        else if (systemName == "cloud") {
+            geom = harmonicCloud(nAtoms > 0 ? nAtoms : 3000);
+        }
         else {
             throw std::runtime_error("unknown --system " + systemName);
         }
@@ -103,17 +113,20 @@ int main(int argc, char** argv) {
                   << "\n";
 
         const auto result = runMd(
-            geom, config, platform, nveSteps, nvtSteps, dt, temperature, friction, evalRepeats
+            geom, config, platform, nveSteps, nvtSteps, dt, temperature, friction,
+            evalRepeats, warmupEvals, warmupSteps
         );
-        std::cout << "eval_ms=" << result.evalMs << "\n";
+        std::cout << "eval_ms=" << result.evalMs << " (median, hot Context)\n";
         if (!result.nve.empty()) {
             printTrace("NVE", result.nve, dt);
             std::cout << "nve_ms_per_step=" << result.nveMsPerStep
+                      << "  steps=" << nveSteps
                       << "  drift=" << result.nveDrift << " kJ/mol\n";
         }
         if (!result.nvt.empty()) {
             printTrace("NVT", result.nvt, dt);
-            std::cout << "nvt_ms_per_step=" << result.nvtMsPerStep << "\n";
+            std::cout << "nvt_ms_per_step=" << result.nvtMsPerStep
+                      << "  steps=" << nvtSteps << "\n";
         }
         return 0;
     }

@@ -2,15 +2,14 @@
 Periodic MD
 ===========
 
-A cubic water box through native ``MetatomicForce``:
+Cubic water boxes through native ``MetatomicForce``:
 
-* **harmonic-nl** (core, and TorchScript ``pairlist.pt`` when present) — the
-  independent-atom well plus a vesin pair list that does not change the
-  energy. Langevin 300 K, PBC on.
-* **PET-MAD-XS** — eight waters, the first condensed-phase run of the
-  vendored extra-small checkpoint.
-
-Traces are potential, kinetic, total energy, and instantaneous temperature.
+* **harmonic-nl** (core, and TorchScript ``pairlist.pt`` when present) —
+  1,000 waters (3,000 atoms). The independent-atom well plus a vesin pair
+  list that does not change the energy. Langevin 300 K, PBC on.
+* **PET-MAD-XS** — 32 waters (96 atoms), a condensed-phase run of the
+  vendored extra-small checkpoint. 96 waters is in the settings matrix
+  (``plot_13``), not the conservation traces here.
 """
 
 import matplotlib.pyplot as plt
@@ -23,28 +22,44 @@ from _native import (
     preferred_platform,
     run_nve,
     run_nvt,
+    save_figure,
     water_box,
 )
 
 platform = preferred_platform()
 print(f"platform {platform.getName()}")
-n_mol = 8
-types, positions, box = water_box(n_mol)
-print(f"water box  molecules={n_mol}  atoms={len(types)}  L={box[0, 0]:.3f} nm")
 
-jobs = [("harmonic-nl/core", "harmonic-nl", "core")]
+HARMONIC_MOL = 1000
+PETMAD_MOL = 32
+
+h_types, h_pos, h_box = water_box(HARMONIC_MOL)
+print(
+    f"harmonic-nl box  molecules={HARMONIC_MOL}  atoms={len(h_types)}  "
+    f"L={h_box[0, 0]:.3f} nm"
+)
+p_types, p_pos, p_box = water_box(PETMAD_MOL)
+print(
+    f"PET-MAD box  molecules={PETMAD_MOL}  atoms={len(p_types)}  "
+    f"L={p_box[0, 0]:.3f} nm"
+)
+
+jobs = [
+    ("harmonic-nl/core", "harmonic-nl", "core", h_types, h_pos, h_box, 40, 30),
+]
 nl_pt = pairlist_pt()
 if nl_pt is not None:
-    jobs.append(("harmonic-nl/torch", str(nl_pt), "torch"))
-jobs.append(("PET-MAD-XS", str(petmad_path()), "torch"))
+    jobs.append(
+        ("harmonic-nl/torch", str(nl_pt), "torch", h_types, h_pos, h_box, 40, 30)
+    )
+jobs.append(
+    ("PET-MAD-XS", str(petmad_path()), "torch", p_types, p_pos, p_box, 20, 15)
+)
 
-nve_steps = 40
-nvt_steps = 30
 fig, axes = plt.subplots(2, 2, figsize=(8.8, 6.0))
 dt = 0.5
 
-print(f"{'model':<22} {'NVE drift':>12} {'NVT T':>8}  E0")
-for title, path, backend in jobs:
+print(f"{'model':<22} {'N':>8} {'NVE drift':>12} {'NVT T':>8}  E0")
+for title, path, backend, types, positions, box, nve_steps, nvt_steps in jobs:
     system = make_system(
         types, path, backend=backend, periodic=True, box_nm=box
     )
@@ -55,7 +70,8 @@ for title, path, backend in jobs:
     nvt = run_nvt(system_nvt, positions, platform, nvt_steps, box=box)
     drift = nve[-1, 2] - nve[0, 2]
     print(
-        f"{title:<22} {drift:12.4f} {nvt[:, 3].mean():8.1f}  {nve[0, 0]:.4f}"
+        f"{title:<22} {len(types):8d} {drift:12.4e} {nvt[:, 3].mean():8.1f}  "
+        f"{nve[0, 0]:.4f}"
     )
     t_nve = np.arange(len(nve)) * dt
     t_nvt = np.arange(len(nvt)) * dt
@@ -75,5 +91,9 @@ axes[1, 1].set_ylabel("T / K")
 for ax in axes.ravel():
     ax.set_xlabel("t / fs")
     ax.legend(fontsize=7)
-fig.suptitle(f"{n_mol} waters, {platform.getName()} platform")
+fig.suptitle(
+    f"{HARMONIC_MOL} waters harmonic-nl / {PETMAD_MOL} waters PET-MAD-XS, "
+    f"{platform.getName()}"
+)
 fig.tight_layout()
+save_figure(fig, __file__)
