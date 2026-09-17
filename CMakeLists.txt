@@ -74,7 +74,7 @@ endfunction()
 
 openmm_metatomic_detect_prefixes()
 
-find_package(metatensor 0.2.4 CONFIG REQUIRED)
+find_package(metatensor 0.2.5 CONFIG REQUIRED)
 find_package(metatomic CONFIG REQUIRED)
 
 function(openmm_metatomic_import_torch)
