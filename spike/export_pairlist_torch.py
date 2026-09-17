@@ -27,10 +27,9 @@ CUTOFF_NM = 0.3
 
 
 class NeighborHarmonic(torch.nn.Module):
-    def __init__(self, k: float, n_atoms: int, cutoff: float):
+    def __init__(self, k: float, cutoff: float):
         super().__init__()
         self.k = float(k)
-        self.register_buffer("rest", torch.zeros((n_atoms, 3), dtype=torch.float64))
         self._nl = NeighborListOptions(cutoff, False, True)
 
     def requested_neighbor_lists(self):
@@ -49,7 +48,7 @@ class NeighborHarmonic(torch.nn.Module):
             neighbors = system.get_neighbor_list(self._nl)
             # Touch the pair list without perturbing the energy.
             energy[i] = neighbors.values.sum() * 0.0
-            rest = self.rest.to(dtype=system.positions.dtype, device=system.positions.device)
+            rest = torch.zeros_like(system.positions)
             energy[i] = energy[i] + 0.5 * self.k * ((system.positions - rest) ** 2).sum()
         block = TensorBlock(
             values=energy,
@@ -62,9 +61,8 @@ class NeighborHarmonic(torch.nn.Module):
 
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "pairlist.pt"
-    n_atoms = int(sys.argv[2]) if len(sys.argv) > 2 else 30
 
-    model = NeighborHarmonic(K, n_atoms, CUTOFF_NM)
+    model = NeighborHarmonic(K, CUTOFF_NM)
     capabilities = ModelCapabilities(
         outputs={"energy": ModelOutput(unit="kJ/mol", sample_kind="system")},
         atomic_types=[1, 6, 8],

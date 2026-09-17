@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -87,7 +88,18 @@ struct RawNeighborPairs {
     }
 };
 
-RawNeighborPairs computeNeighborPairs(
+bool useVesinNeighbors() {
+#ifdef OPENMM_METATOMIC_USE_VESIN
+    const char* nl = std::getenv("OPENMM_METATOMIC_NEIGHBOR_LIST");
+    if (nl == nullptr || nl[0] == '\0')
+        return true;
+    return std::strcmp(nl, "naive") != 0 && std::strcmp(nl, "fallback") != 0;
+#else
+    return false;
+#endif
+}
+
+RawNeighborPairs computeNeighborPairsNaive(
     const vector<Vec3>& positions, const Vec3 box[3], bool periodic, double cutoff, bool full
 ) {
     const int n = static_cast<int>(positions.size());
@@ -95,9 +107,57 @@ RawNeighborPairs computeNeighborPairs(
     RawNeighborPairs out;
     out.samples.reserve(static_cast<size_t>(n) * 10);
     out.vectors.reserve(static_cast<size_t>(n) * 6);
+    auto length = [](const Vec3& v) {
+        return std::sqrt(v.dot(v));
+    };
+    int na = 0, nb = 0, nc = 0;
+    if (periodic) {
+        auto images = [&](const Vec3& v) {
+            const double len = length(v);
+            if (len < 1e-12)
+                throw OpenMMException("MetatomicForce: periodic box vector has zero length");
+            return max(1, static_cast<int>(std::ceil(cutoff / len)));
+        };
+        na = images(box[0]);
+        nb = images(box[1]);
+        nc = images(box[2]);
+    }
+    auto consider = [&](int i, int j, int sa, int sb, int sc) {
+        if (i == j && sa == 0 && sb == 0 && sc == 0)
+            return;
+        if (!full && (i > j || (i == j && (sa < 0 || (sa == 0 && sb < 0) || (sa == 0 && sb == 0 && sc <= 0)))))
+            return;
+        const Vec3 shift = sa * box[0] + sb * box[1] + sc * box[2];
+        const Vec3 delta = positions[j] - positions[i] + shift;
+        if (delta.dot(delta) > cutoff2)
+            return;
+        out.samples.push_back(i);
+        out.samples.push_back(j);
+        out.samples.push_back(sa);
+        out.samples.push_back(sb);
+        out.samples.push_back(sc);
+        out.vectors.push_back(delta[0]);
+        out.vectors.push_back(delta[1]);
+        out.vectors.push_back(delta[2]);
+    };
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < n; j++) {
+            for (int sa = -na; sa <= na; sa++)
+                for (int sb = -nb; sb <= nb; sb++)
+                    for (int sc = -nc; sc <= nc; sc++)
+                        consider(i, j, sa, sb, sc);
+        }
+    }
+    return out;
+}
 
+RawNeighborPairs computeNeighborPairs(
+    const vector<Vec3>& positions, const Vec3 box[3], bool periodic, double cutoff, bool full
+) {
 #ifdef OPENMM_METATOMIC_USE_VESIN
-    {
+    if (useVesinNeighbors()) {
+        const int n = static_cast<int>(positions.size());
+        RawNeighborPairs out;
         vector<array<double, 3>> points(static_cast<size_t>(n));
         for (int i = 0; i < n; i++) {
             points[i][0] = positions[i][0];
@@ -150,51 +210,10 @@ RawNeighborPairs computeNeighborPairs(
             out.vectors[3 * k + 2] = neighbors.vectors[k][2];
         }
         vesin_free(&neighbors);
-    }
-#else
-    auto length = [](const Vec3& v) {
-        return std::sqrt(v.dot(v));
-    };
-    int na = 0, nb = 0, nc = 0;
-    if (periodic) {
-        auto images = [&](const Vec3& v) {
-            const double len = length(v);
-            if (len < 1e-12)
-                throw OpenMMException("MetatomicForce: periodic box vector has zero length");
-            return max(1, static_cast<int>(std::ceil(cutoff / len)));
-        };
-        na = images(box[0]);
-        nb = images(box[1]);
-        nc = images(box[2]);
-    }
-    auto consider = [&](int i, int j, int sa, int sb, int sc) {
-        if (i == j && sa == 0 && sb == 0 && sc == 0)
-            return;
-        if (!full && (i > j || (i == j && (sa < 0 || (sa == 0 && sb < 0) || (sa == 0 && sb == 0 && sc <= 0)))))
-            return;
-        const Vec3 shift = sa * box[0] + sb * box[1] + sc * box[2];
-        const Vec3 delta = positions[j] - positions[i] + shift;
-        if (delta.dot(delta) > cutoff2)
-            return;
-        out.samples.push_back(i);
-        out.samples.push_back(j);
-        out.samples.push_back(sa);
-        out.samples.push_back(sb);
-        out.samples.push_back(sc);
-        out.vectors.push_back(delta[0]);
-        out.vectors.push_back(delta[1]);
-        out.vectors.push_back(delta[2]);
-    };
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) {
-            for (int sa = -na; sa <= na; sa++)
-                for (int sb = -nb; sb <= nb; sb++)
-                    for (int sc = -nc; sc <= nc; sc++)
-                        consider(i, j, sa, sb, sc);
-        }
+        return out;
     }
 #endif
-    return out;
+    return computeNeighborPairsNaive(positions, box, periodic, cutoff, full);
 }
 
 // Core backend: attach a pair list to a metatomic::System (C++ API) using

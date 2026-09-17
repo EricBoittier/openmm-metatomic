@@ -7,6 +7,12 @@ All notable changes to openmm-metatomic are documented here, following
 
 ### Added
 
+- SWIG Python wrappers for `MetatomicForce` (`from openmmmetatomic import
+  MetatomicForce`), a C++ NVE/NVT driver (`openmm-metatomic-run-md`), and
+  a settings-matrix bench (`openmm-metatomic-bench-settings`). Gallery
+  `plot_11`–`plot_13` run vacuum and periodic MD plus the settings sweep.
+  Set `OPENMM_METATOMIC_NEIGHBOR_LIST=naive` to force the O(N²) pair-list
+  fallback when vesin is compiled in.
 - **M2: pair-list support for both backends.** `CMakeLists.txt` now detects
   and links `vesin` (`pip install vesin`; falls back to the O(N^2) loop with
   a `-- vesin not found` status message if missing) via a new
@@ -268,6 +274,46 @@ fix: medians across 3 runs were 0.334, 0.567, 0.632 ms (core direct) and
   either backend's plumbing well before this crossover matters — this
   measures relative overhead of the two evaluation paths, not which model
   to pick.
+
+### Timing baseline: MetatomicForce settings matrix (2026-09-17)
+
+Native plugin through `OpenMM::Context` (`openmm-metatomic-bench-settings`),
+this machine (Nobara / Ryzen 9 5900X). OpenMM C++ install exposes Reference
+only (the pip wheel's CPU platform is a different `libOpenMM`). Single
+process launch; 8 evals after one warmup, 8 NVE + 8 NVT steps, 0.5 fs.
+Harmonic rest is the origin. PET-MAD-XS water (3 atoms). CUDA is
+`setDevice("cuda")` on the TorchScript model with host-copy
+`CustomCPPForceImpl` (M3), not OpenMM's CUDA platform.
+
+| Case | N | eval / ms | NVE ms/step | NVT ms/step | NVE drift kJ/mol |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| harmonic core, consistency off | 3 | 0.213 | 0.429 | 0.430 | 0 |
+| harmonic core, consistency on | 3 | 0.243 | 0.494 | 0.478 | 0 |
+| harmonic torch | 3 | 4.43 | 0.78 | 0.79 | 0 |
+| harmonic-nl core, vesin | 24 | 0.483 | 0.933 | 0.981 | 0 |
+| harmonic-nl core, naive O(N²) | 24 | 1.305 | 2.656 | 2.594 | 0 |
+| harmonic-nl torch, vesin | 24 | 5.21 | 1.85 | 1.65 | 0 |
+| SOAP-BPNN torch, vesin | 3 | 23.8 | 14.6 | 15.4 | 0 |
+| PET-MAD-XS torch/cpu, vesin | 3 | 130 | 28.4 | 22.2 | 0.018 |
+| PET-MAD-XS torch/cuda, vesin | 3 | 281 | 103 | 117 | 0.018 |
+
+`checkConsistency` is a few tenths of a millisecond on the harmonic well
+and lost in the noise on PET-MAD. vesin is ~2.7x faster than the naive
+pair list on 24 harmonic-nl atoms. Torch CUDA through the host-copy path
+is slower than Torch CPU for PET-MAD-XS water, as expected until M3/M4.
+NVE drift on the harmonic well is numerical zero; PET-MAD-XS water drifts
+~0.02 kJ/mol over 8 × 0.5 fs.
+
+Separate `openmm-metatomic-run-md` runs, same machine:
+
+| System | NVE drift | NVE ms/step | notes |
+| --- | ---: | ---: | --- |
+| harmonic water, 20 × 0.5 fs | 9e-11 kJ/mol | 0.44 | core, rest at origin |
+| harmonic-nl 8-water box, 30 × 0.5 fs | 1e-9 kJ/mol | 0.93 | core, vesin, PBC |
+| SOAP-BPNN water, 15 × 0.5 fs | 5e-5 kJ/mol | 8.2 | torch |
+| PET-MAD-XS water, 20 × 0.5 fs | 0.031 kJ/mol | 45.5 | torch/cpu |
+| PET-MAD-XS 8-water box, 8 × 0.5 fs | 0.20 kJ/mol | 188 | torch/cpu, PBC |
+| PET-MAD-XS toluene vacuum NVT, 12 × 0.5 fs | n/a | 96 | torch/cpu |
 
 ### Timing baseline: vs. the upstream openmm-ml PR (2026-09-17)
 

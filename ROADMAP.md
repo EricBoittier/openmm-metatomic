@@ -18,7 +18,7 @@ Evaluation has two backends:
 | Milestone | Deliverable |
 | --- | --- |
 | M0 | Standalone C++ spike: core harmonic + TorchScript `.pt`, energy and forces vs FD |
-| M1 | CPU `MetatomicForce`, full systems, energy and conservative forces (builds and validated up to 500k atoms, both backends, through a real `Context`; periodic systems and pair lists now work too, see M2. A Python entry point is still open) |
+| M1 | CPU `MetatomicForce`, full systems, energy and conservative forces (builds and validated up to 500k atoms, both backends, through a real `Context`; periodic systems and pair lists now work too, see M2. Python entry point: SWIG `openmmmetatomic.MetatomicForce`) |
 | M2 | Periodic systems and validated pair lists (done: both backends build pair lists via `vesin` — the core backend's `System::add_pairs`/`System::pairs` round-trip and the torch backend's `add_neighbor_list` both use the same shared, engine-side neighbor search, replacing the old O(N²) fallback and the previous "core backend does not implement pair lists" hard error; validated on periodic and non-periodic systems for both backends, `test-pairlist` in `ctest`. Not done: Verlet-list skin/caching across steps — `vesin`'s pairs are rebuilt from scratch on every `computeForce` call) |
 | M3 | CUDA execution with measured transfer overhead (`CustomCPPForceImpl` host path) |
 | M4 | Zero-copy or low-copy CUDA via DLPack wrapping of OpenMM buffers |

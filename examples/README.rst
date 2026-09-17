@@ -23,13 +23,8 @@ The gallery covers these layers, in ``plot_NN_*.py`` order:
    as ``plot_08``, swept from 3 to 60,000 atoms, with and without a
    ``vesin`` neighbor list, to see where ``createSystem`` vs. per-step
    evaluation cost actually dominates.
-
-What is *not* in this Python gallery: the native ``MetatomicForce`` C++
-plugin (M1) and its pair-list support (M2, ``vesin``-backed, both
-backends) have no Python binding yet, so they cannot be driven from a
-``plot_*.py`` script. They are validated instead by the C++ executables
-built alongside ``OpenMMMetatomic`` when ``OPENMM_DIR`` is set —
-``openmm-metatomic-bench-scaling`` (timing, real ``OpenMM::Context``) and
-``openmm-metatomic-test-pairlist`` (correctness, periodic and
-non-periodic, both backends) — both registered in ``ctest``. See
-CHANGELOG.md for the numbers and ROADMAP.md for milestone status.
+6. **Native ``MetatomicForce``** (``plot_11``–``plot_13``) — the SWIG wrapper
+   around the C++ plugin. Vacuum NVE/NVT (harmonic, PET-MAD-XS, SOAP-BPNN,
+   toluene), a periodic water box, and a settings matrix (backend, device,
+   consistency, neighbor list, platform). Matching C++ drivers:
+   ``openmm-metatomic-run-md`` and ``openmm-metatomic-bench-settings``.

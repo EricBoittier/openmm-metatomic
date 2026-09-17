@@ -86,15 +86,27 @@ cmake --build build
 `OPENMM_DIR` should point at an OpenMM install that provides headers and
 `libOpenMM`. Metatomic and metatensor are found via `CMAKE_PREFIX_PATH`.
 
+SWIG wrappers (`from openmmmetatomic import MetatomicForce`) build when `swig`
+is on `PATH` (`pip install swig`). After `cmake --build`, the module is in
+`build/python`:
+
+```bash
+PYTHONPATH=$PWD/build/python OPENMM_PLUGIN_DIR=$PWD/build \
+  python -c "from openmmmetatomic import MetatomicForce"
+# or: cmake --build build --target PythonInstall
+```
+
 ## Status
 
-Milestone 0 is done; M1 is in progress. `MetatomicForce`/`OpenMMMetatomic`
-now runs end-to-end through a real `OpenMM::Context` (`spike/bench_scaling.cpp`),
-both backends, energy checked against the analytic solution up to 60k atoms
-on non-periodic systems. No Python bindings yet, and periodic systems /
-pair lists are still M2. Building it needs `metatensor-core` >=0.2.5; see
-"Fixed" in [CHANGELOG.md](CHANGELOG.md#unreleased) for the build recipe if
+Milestone 0–2 are done. `MetatomicForce` runs through a real `OpenMM::Context`
+(energy, conservative forces, periodic systems, vesin pair lists, both
+backends). Verlet-list skin/caching across steps is still open (Phase 3).
+
+Python bindings (`from openmmmetatomic import MetatomicForce`) and NVE/NVT
+drivers live in the plugin: `openmm-metatomic-run-md` and
+`openmm-metatomic-bench-settings`. Building it needs `metatensor-core` >=0.2.5;
+see "Fixed" in [CHANGELOG.md](CHANGELOG.md#unreleased) for the build recipe if
 the vendored `metatensor` checkout is older. See [ROADMAP.md](ROADMAP.md).
-Timing baselines (2026-09-16, 2026-09-17, including scaling with atom count
-and native `MetatomicForce` vs. TorchScript) are in
+Timing baselines (2026-09-16, 2026-09-17, including scaling with atom count,
+native `MetatomicForce` vs. TorchScript, and the settings matrix) are in
 [CHANGELOG.md](CHANGELOG.md).

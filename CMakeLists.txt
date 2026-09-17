@@ -395,4 +395,43 @@ if(OPENMM_DIR)
     else()
         add_test(NAME test-pairlist COMMAND openmm-metatomic-test-pairlist)
     endif()
+
+    function(openmm_metatomic_plugin_exe name source)
+        add_executable(${name} ${source})
+        target_include_directories(${name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/openmmapi/include
+            ${OPENMM_DIR}/include
+        )
+        target_link_libraries(${name} PRIVATE
+            OpenMMMetatomic metatomic::shared "${OPENMM_DIR}/lib/libOpenMM.so"
+        )
+        set_property(TARGET ${name} APPEND PROPERTY
+            BUILD_RPATH "${_mta_libdir};${OPENMM_DIR}/lib"
+        )
+        if(OPENMM_METATOMIC_TORCH)
+            target_compile_definitions(${name} PRIVATE OPENMM_METATOMIC_TORCH)
+            target_link_libraries(${name} PRIVATE metatomic_torch)
+            set_property(TARGET ${name} APPEND PROPERTY BUILD_RPATH "${TORCH_INSTALL_PREFIX}/lib")
+            if(_mta_torch_libdir)
+                set_property(TARGET ${name} APPEND PROPERTY BUILD_RPATH "${_mta_torch_libdir}")
+            endif()
+        endif()
+        openmm_metatomic_link_vesin(${name})
+    endfunction()
+
+    openmm_metatomic_plugin_exe(openmm-metatomic-run-md spike/run_md.cpp)
+    openmm_metatomic_plugin_exe(openmm-metatomic-bench-settings spike/bench_settings.cpp)
+
+    add_test(
+        NAME run-md-smoke
+        COMMAND openmm-metatomic-run-md --model harmonic --backend core --nve 5 --nvt 5 --eval 2 --platform Reference
+    )
+    add_test(
+        NAME bench-settings-smoke
+        COMMAND openmm-metatomic-bench-settings
+            --models harmonic --backends core --platforms Reference
+            --nl none --nve 2 --nvt 2 --eval 2
+    )
+
+    add_subdirectory(python)
 endif()
