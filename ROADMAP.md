@@ -24,7 +24,7 @@ Evaluation has two backends:
 | M4 | Zero-copy or low-copy CUDA via DLPack wrapping of OpenMM buffers |
 | M5 | OpenMM-ML entry-point adapter |
 | M6 | ML/MM subsets |
-| M7 | Stress, non-conservative forces, requested inputs |
+| M7 | Stress, non-conservative forces, requested inputs (measured ~1.8x speedup on PET-MAD-XS via the upstream openmm-ml PR's direct force head, see CHANGELOG.md) |
 | M8 | Packaging, documentation, upstream proposals |
 
 Go/no-go at M3: if OpenMM CUDA interfaces cannot support safe low-copy

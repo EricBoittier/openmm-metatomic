@@ -237,6 +237,51 @@ fix: medians across 3 runs were 0.334, 0.567, 0.632 ms (core direct) and
   measures relative overhead of the two evaluation paths, not which model
   to pick.
 
+### Timing baseline: vs. the upstream openmm-ml PR (2026-09-17)
+
+[metatensor/openmm-ml#1](https://github.com/metatensor/openmm-ml/pull/1)
+("Add `MLPotential("metatomic")` backend for exported models") is a
+materially newer `metatomicpotential.py` than the copy on this fork's
+`main` used by every `PythonForce` number above: it adds NPT/virial
+support, `non_conservative`/`variants`/`uncertainty_threshold`, and CUDA
+neighbor lists. Compared with an isolated `git worktree` of the PR branch
+(swapped in for the editable-install finder's module mapping, then swapped
+back — no change to the shared `.venv`), same machine, same session:
+
+- **No regression or improvement on the existing conservative-forces path**:
+  the harmonic-well scaling numbers (`plot_10_scaling.py`, N=3 to 60k) match
+  the `main` numbers above to within run-to-run noise, both with and
+  without the `vesin` neighbor list. The PR adds capability, not speed, for
+  the case every other numbers in this file already measured.
+- **`non_conservative` forces are a real, substantial speedup on a real
+  model**: PET-MAD-XS water (`WATER_NM`, single molecule, CPU), 40 evals
+  after 5 warmup, 3 repeated process launches, `MLPotential("metatomic",
+  ..., non_conservative="forces")` vs. the default conservative
+  (`energy.backward()`) path:
+
+  | Mode | eval (median) |
+  | --- | ---: |
+  | conservative (autograd) | 7.66-8.09 ms |
+  | non\_conservative (direct force head) | 4.24-4.40 ms |
+
+  PET-MAD-XS predicts forces directly as a second network head; skipping
+  `pos.requires_grad_(True)` + `energy.backward()` for models that support
+  this is close to a 1.8x speedup. `OpenMMMetatomic`'s own torch backend
+  (`MetatomicEvaluator.cpp`) doesn't have an equivalent yet — that's M7
+  ("non-conservative forces") in ROADMAP.md, not implemented.
+- **The native plugin still wins even on a real model**: the same
+  PET-MAD-XS water system through native `MetatomicForce`/`Context`
+  (conservative forces, `spike/`-style standalone C++, `setDevice("cpu")`
+  to match) evaluates in **5.64-5.77 ms** across 3 runs — faster than
+  openmm-ml's conservative `PythonForce` path (7.66-8.09 ms) by
+  ~1.3-1.4x, energy checked to match the Python path exactly
+  (-1475.74 kJ/mol both ways). That gap is much smaller than on the
+  harmonic well (where a real model's own cost dominates and the thin
+  C++-vs-Python wrapper overhead is a smaller fraction of the total), but
+  it doesn't close — the native path is strictly faster here too, just not
+  non-conservative yet, so a non-conservative-capable native evaluator
+  would likely beat both PythonForce modes above.
+
 ### Timing baseline (2026-09-16)
 
 Recorded on this machine, not GitHub Actions. OpenMM 8.6.1 from pip has no CUDA
