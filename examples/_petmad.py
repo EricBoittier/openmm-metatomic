@@ -32,6 +32,47 @@ WATER_NM = np.array(
 )
 WATER_NUMBERS = [8, 1, 1]
 WATER_SYMBOLS = ["O", "H", "H"]
+SPACING_NM = 0.35
+
+
+def water_box(n_molecules: int, spacing: float = SPACING_NM):
+    n_side = int(np.ceil(n_molecules ** (1.0 / 3.0)))
+    types, positions = [], []
+    count = 0
+    for ix in range(n_side):
+        for iy in range(n_side):
+            for iz in range(n_side):
+                if count >= n_molecules:
+                    break
+                off = np.array([ix, iy, iz], dtype=np.float64) * spacing
+                for t, p in zip(WATER_NUMBERS, WATER_NM):
+                    types.append(t)
+                    positions.append(p + off)
+                count += 1
+    box = n_side * spacing
+    return (
+        np.asarray(types, dtype=np.int32),
+        np.asarray(positions, dtype=np.float64),
+        np.eye(3) * box,
+    )
+
+
+def water_box_topology(n_molecules: int, spacing: float = SPACING_NM):
+    import openmm.app as app
+    import openmm.unit as unit
+
+    types, positions, box = water_box(n_molecules, spacing)
+    topology = app.Topology()
+    chain = topology.addChain()
+    oxygen = app.Element.getBySymbol("O")
+    hydrogen = app.Element.getBySymbol("H")
+    for i in range(n_molecules):
+        residue = topology.addResidue("HOH", chain)
+        topology.addAtom("O", oxygen, residue)
+        topology.addAtom("H1", hydrogen, residue)
+        topology.addAtom("H2", hydrogen, residue)
+    topology.setPeriodicBoxVectors(box * unit.nanometers)
+    return topology, positions, box
 
 
 def models_dir() -> Path:

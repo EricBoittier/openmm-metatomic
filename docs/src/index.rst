@@ -19,8 +19,9 @@ Backends
 The gallery includes **PET-MAD-XS** (`lab-cosmo/upet`_), a **SOAP-BPNN**
 twin of metatrain ``soap_bpnn`` (torch-spex SOAP + per-species SiLU MLP)
 run in both metatomic-core C++ and TorchScript, **scaling** with atom
-count, and native ``MetatomicForce`` MD (NVE / Langevin NVT, periodic
-water, settings matrix) once the SWIG wrappers are built.
+count, native ``MetatomicForce`` MD, and an OpenMM-ML feature tour of the
+same PET-MAD-XS checkpoint (NVT/NPT, non-conservative forces, mixed
+embedding, λ interpolation, link atoms).
 
 .. _lab-cosmo/upet: https://huggingface.co/lab-cosmo/upet
 
@@ -29,5 +30,6 @@ Built HTML is at https://ericboittier.github.io/openmm-metatomic/ .
 .. toctree::
    :maxdepth: 2
 
+   openmm_ml
    examples/index
 

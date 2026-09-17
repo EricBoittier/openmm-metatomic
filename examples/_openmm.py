@@ -206,15 +206,43 @@ def preferred_platforms() -> list:
     return [found[name] for name in names if name in found]
 
 
-def make_potential(model_path: str, device: str = "cpu", check_consistency: bool = False):
+def ensure_openmm_ml_embeddings():
+    """Register mechanical embedding when the package was not installed with
+    entry points (editable / PYTHONPATH checkout)."""
     from openmmml import MLPotential
 
+    if "mechanical" in MLPotential._embeddingFactories:
+        return
+    from openmmml.embeddings.mechanicalembedding import MechanicalEmbeddingFactory
+
+    MLPotential.registerEmbeddingFactory("mechanical", MechanicalEmbeddingFactory())
+
+
+def make_potential(
+    model_path: str,
+    device: str = "cpu",
+    check_consistency: bool = False,
+    **kwargs,
+):
+    from openmmml import MLPotential
+
+    ensure_openmm_ml_embeddings()
     return MLPotential(
         "metatomic",
         modelPath=model_path,
         device=device,
         checkConsistency=check_consistency,
+        **kwargs,
     )
+
+
+def save_figure(fig, script_path, suffix: str = ""):
+    out = Path(script_path).resolve().parent / "plots"
+    out.mkdir(exist_ok=True)
+    dest = out / (Path(script_path).stem + suffix + ".png")
+    fig.savefig(dest, dpi=140)
+    print(f"wrote {dest}")
+    return dest
 
 
 def energy_forces(context) -> Tuple[float, np.ndarray]:

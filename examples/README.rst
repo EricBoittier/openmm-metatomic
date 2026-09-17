@@ -31,3 +31,8 @@ The gallery covers these layers, in ``plot_NN_*.py`` order:
    C++ drivers: ``openmm-metatomic-run-md`` and
    ``openmm-metatomic-bench-settings``. Timing is a hot Context (warmup,
    median ``getState``, then ``Integrator.step(N)``).
+7. **OpenMM-ML features on PET-MAD-XS** (``plot_14``–``plot_15``) —
+   ``MLPotential("metatomic")`` constructor knobs (device, non-conservative
+   forces, uncertainty), Langevin NVT and MonteCarlo NPT, then mixed
+   toluene-in-water with mechanical embedding, ``lambda_interpolate``, and
+   link atoms on ACE-ALA-NME. See also ``docs/src/openmm_ml.rst``.

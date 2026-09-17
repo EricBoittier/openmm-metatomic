@@ -17,6 +17,14 @@ All notable changes to openmm-metatomic are documented here, following
   waters (harmonic-nl), and 32 / 96 waters (PET-MAD-XS). Set
   `OPENMM_METATOMIC_NEIGHBOR_LIST=naive` to force the O(N²) pair-list
   fallback when vesin is compiled in.
+- Gallery `plot_14` / `plot_15` and `docs/src/openmm_ml.rst` walk OpenMM-ML
+  features on PET-MAD-XS: `non_conservative` forces vs autograd NVE,
+  `energy_uncertainty`, MonteCarlo NPT, mixed toluene-in-water
+  (`mlLongRange=False`, mechanical embedding, `lambda_interpolate`), and
+  link atoms on ACE-ALA-NME (`returnInfo=True`). The mixed Langevin figure
+  shows PE/KE/total against MM-only plus toluene snapshots and C–O$_w$
+  RDFs: the PE rise from a minimized `rst7` is equipartition, not a
+  blow-up.
 - **M2: pair-list support for both backends.** `CMakeLists.txt` now detects
   and links `vesin` (`pip install vesin`; falls back to the O(N^2) loop with
   a `-- vesin not found` status message if missing) via a new
