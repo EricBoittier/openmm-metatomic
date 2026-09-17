@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <sstream>
@@ -354,12 +355,13 @@ public:
             );
         }
         const size_t n = positions.size();
-        vector<double> pos(3 * n);
-        for (size_t i = 0; i < n; i++) {
-            pos[3 * i + 0] = positions[i][0];
-            pos[3 * i + 1] = positions[i][1];
-            pos[3 * i + 2] = positions[i][2];
-        }
+        // Vec3 is exactly {double data[3]}, so a vector<Vec3> is already a
+        // contiguous block of 3*n doubles: build `pos` with one memcpy-able
+        // range-construction instead of indexing through Vec3::operator[]
+        // per component, per atom.
+        static_assert(sizeof(Vec3) == 3 * sizeof(double), "Vec3 layout changed");
+        const double* flatPositions = reinterpret_cast<const double*>(positions.data());
+        vector<double> pos(flatPositions, flatPositions + 3 * n);
         vector<double> cell(9, 0.0);
         if (periodic) {
             for (int i = 0; i < 3; i++) {
@@ -375,13 +377,10 @@ public:
             MetatomicEvaluator::Result result;
             result.energy = evaluated.energy;
             result.forces.resize(n);
-            for (size_t i = 0; i < n; i++) {
-                result.forces[i] = Vec3(
-                    evaluated.forces[3 * i],
-                    evaluated.forces[3 * i + 1],
-                    evaluated.forces[3 * i + 2]
-                );
-            }
+            // Same layout argument as above, in reverse: memcpy the flat
+            // forces straight into the Vec3 buffer instead of constructing
+            // each Vec3 component by component.
+            std::memcpy(result.forces.data(), evaluated.forces.data(), 3 * n * sizeof(double));
             return result;
         }
         catch (const exception& e) {
@@ -533,9 +532,8 @@ public:
         MetatomicEvaluator::Result result;
         result.energy = energyTensor.item<double>();
         result.forces.resize(static_cast<size_t>(n));
-        const double* ptr = forceCpu.data_ptr<double>();
-        for (int64_t i = 0; i < n; i++)
-            result.forces[static_cast<size_t>(i)] = Vec3(ptr[3 * i], ptr[3 * i + 1], ptr[3 * i + 2]);
+        static_assert(sizeof(Vec3) == 3 * sizeof(double), "Vec3 layout changed");
+        std::memcpy(result.forces.data(), forceCpu.data_ptr<double>(), 3 * static_cast<size_t>(n) * sizeof(double));
         return result;
     }
 

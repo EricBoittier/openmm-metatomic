@@ -5,6 +5,15 @@
  * real OpenMM::Context) against the same model evaluated directly (no
  * OpenMM), for both the metatomic-core and TorchScript backends, as a
  * function of atom count.
+ *
+ * Fairness note: the first large allocation/heap-growth for a given atom
+ * count is measurably slower than later ones at the same size (page
+ * faults, malloc arena growth). Timing case A fully, then case B fully,
+ * lets whichever case runs *second* inherit case A's already-warmed
+ * memory -- a real effect we hit and had to fix, not a hypothetical one.
+ * So every case for a given N is primed (one pass through every case,
+ * round-robin, before any of them are timed) before *any* of them starts
+ * its timed repeats.
  * -------------------------------------------------------------------------- */
 
 #include "openmmmetatomic/MetatomicForce.h"
@@ -15,6 +24,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <numeric>
@@ -60,19 +70,31 @@ Stats summarize(std::vector<double> samplesMs) {
     return out;
 }
 
-template <typename Fn>
-Stats timeRepeats(Fn&& fn, int repeats, int warmup) {
-    for (int i = 0; i < warmup; i++)
-        fn();
-    std::vector<double> samples;
-    samples.reserve(repeats);
-    for (int i = 0; i < repeats; i++) {
-        const auto t0 = std::chrono::steady_clock::now();
-        fn();
-        const auto t1 = std::chrono::steady_clock::now();
-        samples.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+// Prime every case (round-robin, `warmup` passes) before timing any of
+// them, then time each case's `repeats` calls back to back. This is what
+// keeps memory-warmup effects from favoring whichever case happens to run
+// second -- see the fairness note above the includes.
+std::vector<Stats> runFairly(const std::vector<std::function<void()>>& cases, int repeats, int warmup) {
+    for (int w = 0; w < warmup; w++) {
+        for (const auto& fn : cases)
+            fn();
     }
-    return summarize(samples);
+    std::vector<std::vector<double>> samples(cases.size());
+    for (auto& s : samples)
+        s.reserve(repeats);
+    for (size_t c = 0; c < cases.size(); c++) {
+        for (int i = 0; i < repeats; i++) {
+            const auto t0 = std::chrono::steady_clock::now();
+            cases[c]();
+            const auto t1 = std::chrono::steady_clock::now();
+            samples[c].push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+        }
+    }
+    std::vector<Stats> out;
+    out.reserve(cases.size());
+    for (auto& s : samples)
+        out.push_back(summarize(std::move(s)));
+    return out;
 }
 
 std::vector<double> randomPositions(int n, unsigned seed) {
@@ -99,39 +121,72 @@ std::vector<Vec3> toVec3(const std::vector<double>& flat) {
     return out;
 }
 
-// ---- direct metatomic-core execute_model, no OpenMM at all ----------------
-Stats benchDirectCore(int n, const std::vector<double>& pos, int repeats, int warmup) {
-    const auto typesI = typesFor(n);
-    std::vector<int32_t> types32(typesI.begin(), typesI.end());
-    auto raw = metatomic::BaseModel::to_mta_model(
-        std::make_unique<HarmonicModel>(1.0, std::vector<double>(3 * n, 0.0))
-    );
-    metatomic::ExternalModel model(raw);
-    const std::vector<double> cell(9, 0.0);
-    auto evalOnce = [&]() {
+// State each case's closure needs to keep alive between priming and timing.
+// Held by shared_ptr so main() can build a list of closures without caring
+// about each case's concrete type.
+struct DirectCoreCase {
+    std::vector<int32_t> types32;
+    metatomic::ExternalModel model;
+    std::vector<double> cell = std::vector<double>(9, 0.0);
+    std::vector<double> pos;
+
+    DirectCoreCase(int n, std::vector<double> positions) :
+        model(metatomic::BaseModel::to_mta_model(
+            std::make_unique<HarmonicModel>(1.0, std::vector<double>(3 * n, 0.0))
+        )),
+        pos(std::move(positions))
+    {
+        const auto typesI = typesFor(n);
+        types32.assign(typesI.begin(), typesI.end());
+    }
+
+    void operator()() {
         std::vector<metatomic::System> systems;
         systems.push_back(makeSystem("nm", types32, pos, false, cell));
         evaluateCore(model, systems, false);
-    };
-    return timeRepeats(evalOnce, repeats, warmup);
+    }
+};
+
+// `system` and `integrator` must outlive `context` -- Context takes them by
+// reference, not by value, and does not clone them. Declaration order here
+// is also initialization order, so `context`'s initializer (which runs
+// last) can safely reference the two members declared above it.
+struct OpenMMCase {
+    System system;
+    VerletIntegrator integrator;
+    Context context;
+
+    OpenMMCase(MetatomicForce* force, int n, const std::vector<double>& pos, Platform& platform) :
+        integrator(0.001),
+        context(buildSystem(system, force, n), integrator, platform)
+    {
+        context.setPositions(toVec3(pos));
+    }
+
+    void operator()() {
+        context.getState(State::Forces | State::Energy);
+    }
+
+private:
+    static System& buildSystem(System& system, MetatomicForce* force, int n) {
+        for (int i = 0; i < n; i++)
+            system.addParticle(1.0);
+        system.addForce(force);
+        return system;
+    }
+};
+
+std::function<void()> directCoreCase(int n, const std::vector<double>& pos) {
+    auto state = std::make_shared<DirectCoreCase>(n, pos);
+    return [state]() { (*state)(); };
 }
 
-// ---- native MetatomicForce (backend=core) through a real Context ---------
-Stats benchOpenMMCore(int n, const std::vector<double>& pos, Platform& platform, int repeats, int warmup) {
-    System system;
-    for (int i = 0; i < n; i++)
-        system.addParticle(1.0);
+std::function<void()> openMMCoreCase(int n, const std::vector<double>& pos, Platform& platform) {
     auto* force = new MetatomicForce("harmonic");
     force->setBackend("core");
     force->setAtomicTypes(typesFor(n));
-    system.addForce(force);
-    VerletIntegrator integrator(0.001);
-    Context context(system, integrator, platform);
-    context.setPositions(toVec3(pos));
-    auto evalOnce = [&]() {
-        context.getState(State::Forces | State::Energy);
-    };
-    return timeRepeats(evalOnce, repeats, warmup);
+    auto state = std::make_shared<OpenMMCase>(force, n, pos, platform);
+    return [state]() { (*state)(); };
 }
 
 #ifdef OPENMM_METATOMIC_TORCH
@@ -142,30 +197,42 @@ torch::Device selectDevice(const std::vector<std::string>& supported, const std:
     return torch::Device(metatomic_torch::pick_device(supported, requested));
 }
 
-// ---- direct TorchScript forward + backward, no OpenMM ---------------------
-Stats benchDirectTorch(const std::string& path, int n, const std::vector<double>& pos, int repeats, int warmup) {
-    auto model = metatomic_torch::load_atomistic_model(path);
-    auto capabilities = model.run_method("capabilities")
-                          .toCustomClass<metatomic_torch::ModelCapabilitiesHolder>();
-    auto outputs = capabilities->outputs();
-    const auto energyKey = metatomic_torch::pick_output("energy", outputs, torch::nullopt);
-    auto energyOut = torch::make_intrusive<metatomic_torch::ModelOutputHolder>();
-    energyOut->set_sample_kind(outputs.at(energyKey)->sample_kind());
-    energyOut->set_unit("kJ/mol");
-    auto options = torch::make_intrusive<metatomic_torch::ModelEvaluationOptionsHolder>();
-    options->set_length_unit("nm");
-    options->outputs.insert(energyKey, energyOut);
+struct DirectTorchCase {
+    metatensor_torch::Module model;
+    metatomic_torch::ModelEvaluationOptions options;
+    torch::Tensor types;
+    torch::Tensor cellTensor;
+    torch::Tensor pbc;
+    torch::Device device = torch::kCPU;
+    std::string energyKey;
+    std::vector<double> pos;
+    int n;
 
-    const auto device = selectDevice(capabilities->supported_devices, "cpu");
-    model.to(device);
-    auto typesI = typesFor(n);
-    auto types = torch::tensor(typesI, torch::TensorOptions().dtype(torch::kInt32)).to(device);
-    auto cellTensor = torch::zeros({3, 3}, torch::TensorOptions().dtype(torch::kFloat64)).to(device);
-    auto pbc = torch::tensor({false, false, false}, torch::TensorOptions().dtype(torch::kBool)).to(device);
+    DirectTorchCase(const std::string& path, int n_, std::vector<double> positions) :
+        model(metatomic_torch::load_atomistic_model(path)), pos(std::move(positions)), n(n_)
+    {
+        auto capabilities = model.run_method("capabilities")
+                              .toCustomClass<metatomic_torch::ModelCapabilitiesHolder>();
+        auto outputs = capabilities->outputs();
+        energyKey = metatomic_torch::pick_output("energy", outputs, torch::nullopt);
+        auto energyOut = torch::make_intrusive<metatomic_torch::ModelOutputHolder>();
+        energyOut->set_sample_kind(outputs.at(energyKey)->sample_kind());
+        energyOut->set_unit("kJ/mol");
+        options = torch::make_intrusive<metatomic_torch::ModelEvaluationOptionsHolder>();
+        options->set_length_unit("nm");
+        options->outputs.insert(energyKey, energyOut);
 
-    auto evalOnce = [&]() {
+        device = selectDevice(capabilities->supported_devices, "cpu");
+        model.to(device);
+        const auto typesI = typesFor(n);
+        types = torch::tensor(typesI, torch::TensorOptions().dtype(torch::kInt32)).to(device);
+        cellTensor = torch::zeros({3, 3}, torch::TensorOptions().dtype(torch::kFloat64)).to(device);
+        pbc = torch::tensor({false, false, false}, torch::TensorOptions().dtype(torch::kBool)).to(device);
+    }
+
+    void operator()() {
         auto pos64 = torch::from_blob(
-            const_cast<double*>(pos.data()), {n, 3}, torch::TensorOptions().dtype(torch::kFloat64)
+            pos.data(), {n, 3}, torch::TensorOptions().dtype(torch::kFloat64)
         ).clone().to(device).set_requires_grad(true);
         auto system = torch::make_intrusive<metatomic_torch::SystemHolder>(types, pos64, cellTensor, pbc);
         auto output = model.forward({
@@ -175,26 +242,20 @@ Stats benchDirectTorch(const std::string& path, int n, const std::vector<double>
         auto energyBlock = metatensor_torch::TensorMapHolder::block_by_id(energyMap, 0);
         auto energyTensor = energyBlock->values().sum();
         energyTensor.backward();
-    };
-    return timeRepeats(evalOnce, repeats, warmup);
+    }
+};
+
+std::function<void()> directTorchCase(const std::string& path, int n, const std::vector<double>& pos) {
+    auto state = std::make_shared<DirectTorchCase>(path, n, pos);
+    return [state]() { (*state)(); };
 }
 
-// ---- native MetatomicForce (backend=torch) through a real Context --------
-Stats benchOpenMMTorch(const std::string& path, int n, const std::vector<double>& pos, Platform& platform, int repeats, int warmup) {
-    System system;
-    for (int i = 0; i < n; i++)
-        system.addParticle(1.0);
+std::function<void()> openMMTorchCase(const std::string& path, int n, const std::vector<double>& pos, Platform& platform) {
     auto* force = new MetatomicForce(path);
     force->setBackend("torch");
     force->setAtomicTypes(typesFor(n));
-    system.addForce(force);
-    VerletIntegrator integrator(0.001);
-    Context context(system, integrator, platform);
-    context.setPositions(toVec3(pos));
-    auto evalOnce = [&]() {
-        context.getState(State::Forces | State::Energy);
-    };
-    return timeRepeats(evalOnce, repeats, warmup);
+    auto state = std::make_shared<OpenMMCase>(force, n, pos, platform);
+    return [state]() { (*state)(); };
 }
 #endif
 
@@ -202,47 +263,32 @@ double analyticEnergy(const std::vector<double>& pos) {
     return HarmonicModel::analyticEnergy(1.0, std::vector<double>(pos.size(), 0.0), pos);
 }
 
-void verifyCore(int n, const std::vector<double>& pos, Platform& platform) {
-    const double expected = analyticEnergy(pos);
-    System system;
-    for (int i = 0; i < n; i++)
-        system.addParticle(1.0);
-    auto* force = new MetatomicForce("harmonic");
-    force->setBackend("core");
-    force->setAtomicTypes(typesFor(n));
-    system.addForce(force);
-    VerletIntegrator integrator(0.001);
-    Context context(system, integrator, platform);
-    context.setPositions(toVec3(pos));
-    const double got = context.getState(State::Energy).getPotentialEnergy();
-    if (std::abs(got - expected) > 1e-6 * std::max(1.0, std::abs(expected))) {
+void verifyEnergy(const char* label, int n, double got, double expected, double tol) {
+    if (std::abs(got - expected) > tol * std::max(1.0, std::abs(expected))) {
         throw std::runtime_error(
-            "core MetatomicForce/Context energy mismatch at N=" + std::to_string(n) +
+            std::string(label) + " energy mismatch at N=" + std::to_string(n) +
             ": got " + std::to_string(got) + ", expected " + std::to_string(expected)
         );
     }
 }
 
+void verifyCore(int n, const std::vector<double>& pos, Platform& platform) {
+    auto* force = new MetatomicForce("harmonic");
+    force->setBackend("core");
+    force->setAtomicTypes(typesFor(n));
+    OpenMMCase state(force, n, pos, platform);
+    const double got = state.context.getState(State::Energy).getPotentialEnergy();
+    verifyEnergy("core MetatomicForce/Context", n, got, analyticEnergy(pos), 1e-6);
+}
+
 #ifdef OPENMM_METATOMIC_TORCH
 void verifyTorch(const std::string& path, int n, const std::vector<double>& pos, Platform& platform) {
-    const double expected = analyticEnergy(pos);
-    System system;
-    for (int i = 0; i < n; i++)
-        system.addParticle(1.0);
     auto* force = new MetatomicForce(path);
     force->setBackend("torch");
     force->setAtomicTypes(typesFor(n));
-    system.addForce(force);
-    VerletIntegrator integrator(0.001);
-    Context context(system, integrator, platform);
-    context.setPositions(toVec3(pos));
-    const double got = context.getState(State::Energy).getPotentialEnergy();
-    if (std::abs(got - expected) > 1e-4 * std::max(1.0, std::abs(expected))) {
-        throw std::runtime_error(
-            "torch MetatomicForce/Context energy mismatch at N=" + std::to_string(n) +
-            ": got " + std::to_string(got) + ", expected " + std::to_string(expected)
-        );
-    }
+    OpenMMCase state(force, n, pos, platform);
+    const double got = state.context.getState(State::Energy).getPotentialEnergy();
+    verifyEnergy("torch MetatomicForce/Context", n, got, analyticEnergy(pos), 1e-4);
 }
 #endif
 
@@ -307,7 +353,8 @@ int main(int argc, char** argv) {
         Platform& platform = Platform::getPlatformByName("Reference");
 
         std::cout << "OpenMM platform: " << platform.getName() << "\n";
-        std::cout << repeats << " timed evals after " << warmup << " warmup calls per row\n\n";
+        std::cout << repeats << " timed evals after " << warmup
+                  << " round-robin warmup passes over all cases for this N\n\n";
         std::cout << std::left << std::setw(26) << "case"
                   << std::right << std::setw(8) << "atoms"
                   << std::setw(14) << "mean/ms"
@@ -320,22 +367,32 @@ int main(int argc, char** argv) {
             const auto pos = randomPositions(n, /*seed=*/12345u + static_cast<unsigned>(n));
 
             verifyCore(n, pos, platform);
-            printRow("core, direct execute_model", n, benchDirectCore(n, pos, repeats, warmup));
-            printRow("core, MetatomicForce/Context", n, benchOpenMMCore(n, pos, platform, repeats, warmup));
+            std::vector<std::string> labels = {"core, direct execute_model", "core, MetatomicForce/Context"};
+            std::vector<std::function<void()>> cases = {
+                directCoreCase(n, pos),
+                openMMCoreCase(n, pos, platform),
+            };
 
 #ifdef OPENMM_METATOMIC_TORCH
+            std::string torchPath;
             if (!torchDir.empty()) {
-                const auto path = (std::filesystem::path(torchDir) / ("harmonic-" + std::to_string(n) + ".pt")).string();
-                if (std::filesystem::is_regular_file(path)) {
-                    verifyTorch(path, n, pos, platform);
-                    printRow("torch, direct forward+backward", n, benchDirectTorch(path, n, pos, repeats, warmup));
-                    printRow("torch, MetatomicForce/Context", n, benchOpenMMTorch(path, n, pos, platform, repeats, warmup));
+                torchPath = (std::filesystem::path(torchDir) / ("harmonic-" + std::to_string(n) + ".pt")).string();
+                if (std::filesystem::is_regular_file(torchPath)) {
+                    verifyTorch(torchPath, n, pos, platform);
+                    labels.push_back("torch, direct forward+backward");
+                    cases.push_back(directTorchCase(torchPath, n, pos));
+                    labels.push_back("torch, MetatomicForce/Context");
+                    cases.push_back(openMMTorchCase(torchPath, n, pos, platform));
                 }
                 else {
-                    std::cerr << "missing " << path << ", skipping torch rows for N=" << n << "\n";
+                    std::cerr << "missing " << torchPath << ", skipping torch rows for N=" << n << "\n";
                 }
             }
 #endif
+
+            const auto stats = runFairly(cases, repeats, warmup);
+            for (size_t i = 0; i < cases.size(); i++)
+                printRow(labels[i], n, stats[i]);
             std::cout << "\n";
         }
         std::cout << "all energies matched the analytic harmonic well within tolerance\n";

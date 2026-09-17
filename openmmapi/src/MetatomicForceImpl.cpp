@@ -44,6 +44,6 @@ double MetatomicForceImpl::computeForce(ContextImpl& context, const vector<Vec3>
     context.getPeriodicBoxVectors(a, b, c);
     const Vec3 box[3] = {a, b, c};
     auto result = evaluator->compute(positions, box);
-    forces = result.forces;
+    forces = std::move(result.forces);
     return result.energy;
 }
