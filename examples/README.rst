@@ -41,3 +41,9 @@ The gallery covers these layers, in ``plot_NN_*.py`` order:
    compared on energy, forces, ``getState`` cost and ms/step: toluene in
    vacuum, toluene in explicit water through ``createMixedSystem`` (so the
    native force uses its particle subset), and the direct force head.
+9. **Complex mixed ML/MM** (``plot_17``) — ACE-ALA-NME in explicit water with Amber19
+   (bonds, angles, proper and improper torsions, CMAP, PME, NaCl) and CHARMM36
+   (NBFix + 1-4 custom bonds), plus link atoms, ``lambda_interpolate``, a
+   reversed ML subset, and every other water molecule as ML (~1,000 atoms).
+   Native vs ``PythonForce``; the test module is
+   ``tests/python/test_complex_mixed.py``.

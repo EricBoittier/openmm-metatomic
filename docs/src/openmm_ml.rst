@@ -121,3 +121,13 @@ vacuum favours the native path a little: 12.6 ms vs 11.1 ms (1.13x), or
 6.6 ms vs 5.4 ms (1.23x) with the direct force head. Energies agree to
 ~1e-3 kJ/mol and forces to ~1e-2 kJ/mol/nm, the level expected from a float32
 model evaluated with two different neighbor-list builds.
+
+``plot_17_complex_mixed.py`` (and ``tests/python/test_complex_mixed.py``) is the
+attempt to break that: Amber19 ACE-ALA-NME in explicit water with NaCl (bonds, angles,
+proper and improper torsions, CMAP, PME, rigid water, H-mass repartitioning,
+plus an injected Ryckaert–Bellemans torsion), CHARMM36 on the same peptide
+(NBFix ``CustomNonbondedForce`` and 1-4 ``CustomBondForce``), ALA-only link
+atoms, ``lambda_interpolate`` at 0/½/1, a reversed ML subset, every other
+water molecule as ML (~1,000 discontiguous atoms), two native forces in one
+System, and a short Langevin run that asserts the ML force group is silent
+on MM atoms.

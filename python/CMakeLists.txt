@@ -89,3 +89,12 @@ add_test(
 set_tests_properties(python-openmmml-native PROPERTIES
     ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR};OPENMM_PLUGIN_DIR=${CMAKE_BINARY_DIR}"
 )
+
+add_test(
+    NAME python-complex-mixed
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q
+        "${CMAKE_SOURCE_DIR}/tests/python/test_complex_mixed.py"
+)
+set_tests_properties(python-complex-mixed PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR};OPENMM_PLUGIN_DIR=${CMAKE_BINARY_DIR}"
+)

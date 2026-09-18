@@ -64,6 +64,14 @@ All notable changes to openmm-metatomic are documented here, following
   `lambda_interpolate` must still collapse to the MM energy at 0.
   `tests/python/test_serialization.py` (`python-serialization`) round-trips
   every new field, reads a version-1 document, and refuses an unknown version.
+  `tests/python/test_complex_mixed.py` (`python-complex-mixed`) and gallery
+  `plot_17` try to break the mixed path on ACE-ALA-NME in explicit water: Amber19 (bonds,
+  angles, proper and improper torsions, CMAP, PME, rigid water, H-mass
+  repartitioning, NaCl, an injected Ryckaert–Bellemans torsion), CHARMM36
+  (NBFix + 1-4 custom bonds), ALA-only link atoms, `lambda_interpolate` at
+  0/½/1, a reversed ML subset, every other water as ML (~1,000 discontiguous
+  atoms), two native forces in one System, and a Langevin run that asserts
+  the ML force group is silent on MM atoms.
 - Head-to-head on PET-MAD-XS, `examples/plot_16_native_vs_pythonforce.py`:
   identical Systems, one hot Context per backend, warmup evals and steps, then
   round-robin blocks of `getState` calls and of `step(N)` so that a machine
