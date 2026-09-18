@@ -36,6 +36,7 @@ from _openmm import (
     export_openmm_model,
     format_ms,
     make_potential,
+    mixed_system,
     openmm_ml_data,
     preferred_platforms,
     spike_binary,
@@ -67,7 +68,7 @@ def time_openmm(label, topology, positions, model_path, platform, mixed=None, n_
         mm_system, ml_atoms = mixed
 
         def _mixed():
-            return potential.createMixedSystem(topology, mm_system, ml_atoms)
+            return mixed_system(potential, topology, mm_system, ml_atoms)
 
         _, t_sys = timed(_mixed, repeat=1)
         system = _mixed()

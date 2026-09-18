@@ -96,4 +96,4 @@ fig.suptitle(
     f"{platform.getName()}"
 )
 fig.tight_layout()
-save_figure(fig, __file__)
+save_figure(fig)

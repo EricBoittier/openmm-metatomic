@@ -219,4 +219,4 @@ axes[2].set_ylabel(r"$t_\mathrm{PythonForce} / t_\mathrm{native}$")
 for xi, value in zip(x, speedup):
     axes[2].text(xi, value, f"{value:.2f}x", ha="center", va="bottom", fontsize=8)
 fig.tight_layout()
-save_figure(fig, __file__)
+save_figure(fig)

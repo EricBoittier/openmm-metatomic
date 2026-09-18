@@ -31,6 +31,7 @@ from _openmm import (
     energy_forces,
     export_openmm_model,
     make_potential,
+    mixed_system,
     openmm_ml_data,
     preferred_platforms,
 )
@@ -70,8 +71,8 @@ with tempfile.TemporaryDirectory() as tmp:
         n_atoms = prmtop.topology.getNumAtoms()
         mm_system = prmtop.createSystem(nonbondedMethod=app.PME)
         potential = make_potential(model, device="cpu")
-        mixed = potential.createMixedSystem(
-            prmtop.topology, mm_system, ml_atoms, interpolate=False
+        mixed = mixed_system(
+            potential, prmtop.topology, mm_system, ml_atoms, interpolate=False
         )
         _, e_mm, _ = run_context(mm_system, inpcrd.positions, platform)
         mixed_context, e_mixed, _ = run_context(mixed, inpcrd.positions, platform)
@@ -84,8 +85,8 @@ with tempfile.TemporaryDirectory() as tmp:
             f"E_MM={e_mm:.6e}  E_mixed={e_mixed:.6e}"
         )
         try:
-            interp = potential.createMixedSystem(
-                prmtop.topology, mm_system, ml_atoms, interpolate=True
+            interp = mixed_system(
+                potential, prmtop.topology, mm_system, ml_atoms, interpolate=True
             )
             interp_context, e_l1, _ = run_context(interp, inpcrd.positions, platform)
             interp_context.setParameter("lambda_interpolate", 0)
@@ -138,7 +139,7 @@ with tempfile.TemporaryDirectory() as tmp:
             constraints=app.HBonds,
         )
         potential = make_potential(model, device="cpu")
-        mixed = potential.createMixedSystem(pdb.topology, mm_system, peptide)
+        mixed = mixed_system(potential, pdb.topology, mm_system, peptide)
         n_atoms = pdb.topology.getNumAtoms()
         _, e_mm, _ = run_context(mm_system, pos, platform)
         _, e_mixed, _ = run_context(mixed, pos, platform)

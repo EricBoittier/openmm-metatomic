@@ -8,6 +8,7 @@ follow that API, plus the same Amber mixed systems used by OpenMM-ML's
 metatomic tests.
 """
 
+import inspect
 import os
 import time
 from pathlib import Path
@@ -289,10 +290,27 @@ def mixed_system(potential, topology, system, atoms, **kwargs):
     return potential.createMixedSystem(topology, system, atoms, **kwargs)
 
 
-def save_figure(fig, script_path, suffix: str = ""):
-    out = Path(script_path).resolve().parent / "plots"
+def _example_script_path(script_path=None) -> Path:
+    """Path of the calling ``plot_*.py``. Sphinx-gallery often has no ``__file__``."""
+    if script_path is not None:
+        try:
+            path = Path(script_path)
+            if path.suffix == ".py":
+                return path
+        except TypeError:
+            pass
+    for frame in inspect.stack()[1:]:
+        name = Path(frame.filename).name
+        if name.startswith("plot_") and name.endswith(".py"):
+            return Path(frame.filename)
+    return repo_root() / "examples" / "gallery.py"
+
+
+def save_figure(fig, script_path=None, suffix: str = ""):
+    path = _example_script_path(script_path)
+    out = path.resolve().parent / "plots"
     out.mkdir(exist_ok=True)
-    dest = out / (Path(script_path).stem + suffix + ".png")
+    dest = out / (path.stem + suffix + ".png")
     fig.savefig(dest, dpi=140)
     print(f"wrote {dest}")
     return dest

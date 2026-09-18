@@ -24,6 +24,7 @@ import torch
 from _openmm import (
     energy_forces,
     make_potential,
+    mixed_system,
     openmm_ml_data,
     preferred_platforms,
     vacuum_topology,
@@ -106,8 +107,8 @@ if data is not None:
         prmtop = app.AmberPrmtopFile(str(prm))
         inpcrd = app.AmberInpcrdFile(str(rst))
         mm_system = prmtop.createSystem(nonbondedMethod=app.PME)
-        mixed = pot.createMixedSystem(
-            prmtop.topology, mm_system, list(range(15)), interpolate=False
+        mixed = mixed_system(
+            pot, prmtop.topology, mm_system, list(range(15)), interpolate=False
         )
         ctx_m = mm.Context(mixed, mm.VerletIntegrator(0.0005), platform)
         ctx_m.setPositions(inpcrd.positions)

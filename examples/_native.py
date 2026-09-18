@@ -78,14 +78,10 @@ def harmonic_cloud(n_atoms: int, seed: int = 1):
     return types, positions
 
 
-def save_figure(fig, script_path, suffix: str = ""):
-    out = Path(script_path).resolve().parent / "plots"
-    out.mkdir(exist_ok=True)
-    name = Path(script_path).stem + suffix + ".png"
-    dest = out / name
-    fig.savefig(dest, dpi=140)
-    print(f"wrote {dest}")
-    return dest
+def save_figure(fig, script_path=None, suffix: str = ""):
+    from _openmm import save_figure as _save
+
+    return _save(fig, script_path, suffix=suffix)
 
 
 def periodic_topology(types: Sequence[int], box_nm: np.ndarray):

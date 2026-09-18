@@ -27,6 +27,7 @@ import openmm.unit as unit
 from _openmm import (
     energy_forces,
     make_potential,
+    mixed_system,
     openmm_ml_data,
     preferred_platforms,
     save_figure,
@@ -120,19 +121,19 @@ if data is None or not (data / "toluene" / "toluene-explicit.prm7").is_file():
     ax.text(0.5, 0.5, "openmm-ml test data missing", ha="center", va="center")
     ax.set_axis_off()
     fig.tight_layout()
-    save_figure(fig, __file__)
+    save_figure(fig)
 else:
     prmtop = app.AmberPrmtopFile(str(data / "toluene" / "toluene-explicit.prm7"))
     inpcrd = app.AmberInpcrdFile(str(data / "toluene" / "toluene-explicit.rst7"))
     ml_atoms = list(range(15))
     mm_system = prmtop.createSystem(nonbondedMethod=app.PME)
-    mixed = potential.createMixedSystem(
+    mixed = mixed_system(
+        potential,
         prmtop.topology,
         mm_system,
         ml_atoms,
         interpolate=False,
         embedding="mechanical",
-        mlLongRange=False,
     )
     python_forces = [f for f in mixed.getForces() if isinstance(f, mm.PythonForce)]
     print(
@@ -152,13 +153,13 @@ else:
     del mm_ctx, mix_ctx
 
     try:
-        interp = potential.createMixedSystem(
+        interp = mixed_system(
+            potential,
             prmtop.topology,
             mm_system,
             ml_atoms,
             interpolate=True,
             embedding="mechanical",
-            mlLongRange=False,
         )
         interp_ctx = mm.Context(interp, mm.VerletIntegrator(0.001), platform)
         interp_ctx.setPositions(inpcrd.positions)
@@ -181,13 +182,13 @@ else:
         str(model_path), device="cpu", uncertainty_threshold=None
     )
     mm_md = prmtop.createSystem(nonbondedMethod=app.PME, rigidWater=True)
-    mixed_md = potential.createMixedSystem(
+    mixed_md = mixed_system(
+        potential,
         prmtop.topology,
         mm_md,
         ml_atoms,
         interpolate=False,
         embedding="mechanical",
-        mlLongRange=False,
     )
     n_steps = 16
     dt_ps = 0.0005
@@ -310,7 +311,7 @@ else:
     axes[1, 1].legend(fontsize=7)
     fig2.suptitle("Toluene-in-water Langevin: geometry is stable")
     fig2.tight_layout()
-    save_figure(fig2, __file__, suffix="_langevin")
+    save_figure(fig2, suffix="_langevin")
 
     ala_path = data / "alanine-dipeptide" / "alanine-dipeptide-explicit.pdb"
     if ala_path.is_file():
@@ -331,13 +332,13 @@ else:
             nonbondedCutoff=1.0 * unit.nanometer,
             constraints=app.HBonds,
         )
-        info = potential.createMixedSystem(
+        info = mixed_system(
+            potential,
             ala_pdb.topology,
             ala_mm,
             ala_atoms,
             interpolate=False,
             embedding="mechanical",
-            mlLongRange=False,
             returnInfo=True,
         )
         n_old = ala_pdb.topology.getNumAtoms()
@@ -387,4 +388,4 @@ else:
         axes[1].set_ylabel("E / kJ mol$^{-1}$")
         axes[1].set_title("MM (0) → ML internals (1)")
     fig.tight_layout()
-    save_figure(fig, __file__)
+    save_figure(fig)
