@@ -131,3 +131,22 @@ atoms, ``lambda_interpolate`` at 0/½/1, a reversed ML subset, every other
 water molecule as ML (~1,000 discontiguous atoms), two native forces in one
 System, and a short Langevin run that asserts the ML force group is silent
 on MM atoms.
+
+Upstream notes
+--------------
+
+These are in-tree reminders, not posts on the upstream issues.
+
+* **No virial path** (`metatensor/metatomic#333`_): a non-conservative *stress*
+  is requested and validated so a missing head fails early, but OpenMM cannot
+  consume it. NPT stays on a ``MonteCarloBarostat``, which finite-differences
+  the energy when all three directions are periodic.
+* **Native backend as an extra** (`metatensor/openmm-ml#1`_):
+  ``MLPotential("metatomic")`` remains the PythonForce backend.
+  ``MLPotential("metatomic-native")`` is this plugin's entry point, registered
+  either by ``openmmml.potentials`` or ``openmmmetatomic.register()``. Mixed
+  systems, ``lambda_interpolate`` and link atoms are unchanged because
+  mechanical embedding only calls ``addForces``.
+
+.. _metatensor/metatomic#333: https://github.com/metatensor/metatomic/issues/333
+.. _metatensor/openmm-ml#1: https://github.com/metatensor/openmm-ml/pull/1

@@ -98,7 +98,7 @@ PYTHONPATH=$PWD/build/python OPENMM_PLUGIN_DIR=$PWD/build \
 
 ## Status
 
-Milestones 0–3 and 5–7 are done, M4 is declined on measurement.
+Milestones 0–8 are done (M8 without conda-forge or plugin CI).
 `MetatomicForce` runs through a real
 `OpenMM::Context` (energy, conservative forces, periodic systems, vesin pair
 lists, both backends) and now covers the rest of what
@@ -120,10 +120,12 @@ cannot drive an integrator (OpenMM has no virial path); NPT goes through a
 `MonteCarloBarostat`.
 
 `setDevice("cuda")` runs the model on the GPU on any OpenMM platform —
-`CustomCPPForceImpl` exchanges host buffers either way. PET-MAD-XS on an
-RTX 4060 Ti is 2.8x faster than CPU at 96 atoms and 8.6x at 288, while the
-host↔device copies cost 23–49 µs, so M4 (zero-copy DLPack) is declined rather
-than implemented.
+`CustomCPPForceImpl` exchanges host buffers either way. The evaluator then
+`copy_()`s into persistent device tensors instead of `clone()` every step
+(M4). PET-MAD-XS on an RTX 4060 Ti is 2.8x faster than CPU at 96 atoms and
+8.6x at 288; the bare N×3 round trip is still 23–50 µs. Wrapping OpenMM's
+CUDA `posq` would mean leaving `CustomCPPForceImpl`, and is only worth it if
+`getPositions` beats the model forward at ≥10k atoms.
 
 Pair lists are cached across steps: every neighbor-list request keeps its
 `vesin` list alive behind a Verlet skin (`OPENMM_METATOMIC_NEIGHBOR_SKIN`, nm,

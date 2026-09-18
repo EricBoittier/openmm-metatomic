@@ -20,14 +20,16 @@ Devices and platforms
 ---------------------
 
 ``setDevice("cuda")`` moves the model to the GPU. The OpenMM platform is a
-separate choice and barely matters: ``CustomCPPForceImpl`` hands the force host
-positions and takes host forces back on every platform, and those copies are
-tens of microseconds. PET-MAD-XS on an RTX 4060 Ti is 2.8x faster on CUDA than
-on CPU at 96 atoms and 8.6x at 288, with no measurable difference between the
-Reference, CPU and CUDA platforms for the same CUDA-resident model. A model
-cheap enough for the copies to matter is usually faster on the CPU to begin
-with. ``openmm-metatomic-bench-cuda`` reproduces all of this, and ``test-cuda``
-in ``ctest`` checks that both devices and all three platforms agree.
+separate choice: ``CustomCPPForceImpl`` still hands the force host positions
+and takes host forces back. The evaluator then ``copy_()`` into persistent
+device tensors (positions, cell, forces, neighbor lists) instead of
+``clone()`` on every step. PET-MAD-XS on an RTX 4060 Ti is 2.8x faster on CUDA
+than on CPU at 96 atoms and 8.6x at 288. A wrap of OpenMM's CUDA ``posq`` would
+mean a CUDA ``ForceImpl``; it is only worth it if ``getPositions`` beats the
+model forward at ≥10k atoms. ``openmm-metatomic-bench-cuda`` reproduces the
+timings (including a 1024-water box), and ``test-cuda`` checks that both
+devices and all three platforms agree, including eight consecutive steps on
+reused buffers.
 
 Pair lists
 ----------
@@ -65,6 +67,7 @@ Built HTML is at https://ericboittier.github.io/openmm-metatomic/ .
 .. toctree::
    :maxdepth: 2
 
+   install
    openmm_ml
    examples/index
 

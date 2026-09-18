@@ -1,11 +1,11 @@
 /* -------------------------------------------------------------------------- *
  *                              OpenMM-Metatomic                              *
  * -------------------------------------------------------------------------- *
- * M3: the model on a CUDA device, through the CustomCPPForceImpl host path.
+ * M3/M4: the model on a CUDA device, through the CustomCPPForceImpl host path.
  * OpenMM hands us host positions and takes host forces back whatever platform
- * it runs on, so the only thing that can differ between devices and platforms
- * is a transfer bug. Each check therefore compares CUDA against CPU on the same
- * geometry, and skips cleanly when there is no CUDA to test.
+ * it runs on; M4 reuses the evaluator's device tensors across steps instead of
+ * clone()+alloc each call. Each check therefore compares CUDA against CPU on
+ * the same geometry, and skips cleanly when there is no CUDA to test.
  * -------------------------------------------------------------------------- */
 
 #include "openmmmetatomic/MetatomicForce.h"
@@ -107,6 +107,37 @@ void checkEvaluator(const std::string& modelPath) {
     }
 }
 
+// Persistent device tensors must still track a moving system: several
+// consecutive compute() calls with updated positions, CPU vs CUDA.
+void checkPersistentBuffers(const std::string& modelPath) {
+    std::cout << "persistent buffers, cpu vs cuda over 8 steps\n";
+    const int n = 24;
+    auto positions = randomPositions(n, 19, 0.4);
+    const Vec3 box[3] = {Vec3(2, 0, 0), Vec3(0, 2, 0), Vec3(0, 0, 2)};
+
+    MetatomicEvaluator::Config cpuConfig;
+    cpuConfig.modelPath = modelPath;
+    cpuConfig.backend = "torch";
+    cpuConfig.device = "cpu";
+    cpuConfig.atomicTypes = typesFor(n);
+    cpuConfig.pbc = {true, true, true};
+    MetatomicEvaluator::Config cudaConfig = cpuConfig;
+    cudaConfig.device = "cuda";
+    MetatomicEvaluator cpuEval(cpuConfig);
+    MetatomicEvaluator cudaEval(cudaConfig);
+    for (int step = 0; step < 8; step++) {
+        for (auto& v : positions)
+            v += Vec3(0.002 * step, -0.001 * step, 0.0015);
+        const auto cpu = cpuEval.compute(positions, box);
+        const auto cuda = cudaEval.compute(positions, box);
+        const double dE = std::abs(cuda.energy - cpu.energy);
+        const double dF = maxForceDiff(cuda.forces, cpu.forces);
+        require(dE < 1e-6, "energy drifted between cpu and cuda on reused buffers");
+        require(dF < 1e-6, "forces drifted between cpu and cuda on reused buffers");
+    }
+    std::cout << "  8 steps: |dE| and max|dF| < 1e-6\n";
+}
+
 /// Energy and forces from a full Context on a named platform.
 std::pair<double, std::vector<Vec3>> contextRun(
     const std::string& modelPath, const std::string& platform, const std::string& device,
@@ -196,6 +227,7 @@ int main(int argc, char** argv) {
             return 0;
 
         checkEvaluator(modelPath);
+        checkPersistentBuffers(modelPath);
         checkPlatforms(modelPath);
         std::cout << "CUDA host path: OK\n";
         return 0;

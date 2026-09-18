@@ -1,9 +1,11 @@
 """OpenMM / OpenMM-ML helpers that match the current end-user path.
 
-The native ``MetatomicForce`` plugin is not yet the Python entry point.
-Production setups today go through ``MLPotential("metatomic")``, which installs
-a ``PythonForce``. These helpers follow that API, plus the same Amber mixed
-systems used by OpenMM-ML's metatomic tests.
+The native plugin is a first-class Python entry point:
+``MLPotential("metatomic-native")`` after ``openmmmetatomic.register()`` (or
+the ``openmmml.potentials`` entry point when the package is installed).
+``MLPotential("metatomic")`` still installs a ``PythonForce``. These helpers
+follow that API, plus the same Amber mixed systems used by OpenMM-ML's
+metatomic tests.
 """
 
 import os

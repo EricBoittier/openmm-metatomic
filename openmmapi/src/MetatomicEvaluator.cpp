@@ -283,8 +283,8 @@ private:
 
 // Only periodic directions contribute a cell row; a non-periodic direction is
 // zeroed, matching what OpenMM-ML sends for a partially periodic box.
-vector<double> cellRows(const Vec3 box[3], const array<bool, 3>& pbc) {
-    vector<double> cell(9, 0.0);
+void fillCellRows(const Vec3 box[3], const array<bool, 3>& pbc, vector<double>& cell) {
+    cell.assign(9, 0.0);
     for (int i = 0; i < 3; i++) {
         if (!pbc[i])
             continue;
@@ -292,6 +292,11 @@ vector<double> cellRows(const Vec3 box[3], const array<bool, 3>& pbc) {
         cell[3 * i + 1] = box[i][1];
         cell[3 * i + 2] = box[i][2];
     }
+}
+
+vector<double> cellRows(const Vec3 box[3], const array<bool, 3>& pbc) {
+    vector<double> cell;
+    fillCellRows(box, pbc, cell);
     return cell;
 }
 
@@ -425,10 +430,23 @@ metatensor_torch::TensorMap systemScalarTorch(
     return tensor->to(dtype, device);
 }
 
+void ensureTensor(torch::Tensor& tensor, torch::IntArrayRef sizes, torch::TensorOptions options) {
+    if (!tensor.defined() || tensor.sizes() != sizes)
+        tensor = torch::empty(sizes, options);
+}
+
+/// Device copies of one pair-list request, resized only when the pair count
+/// changes. copy_() on a hit avoids the per-step clone()+alloc of the old path.
+struct NeighborUpload {
+    torch::Tensor samples;
+    torch::Tensor vectors;
+};
+
 void addNeighborList(
     metatomic_torch::System& system,
     const metatomic_torch::NeighborListOptions& request,
     NeighborList& neighborList,
+    NeighborUpload& upload,
     const vector<Vec3>& positions,
     const Vec3 box[3],
     const array<bool, 3>& pbc,
@@ -441,16 +459,34 @@ void addNeighborList(
     const auto& raw = neighborList.compute(positions, box, pbc, cutoff, full);
     const int64_t nPairs = static_cast<int64_t>(raw.size());
 
-    // from_blob does not own these buffers, and the list reuses them on the next
-    // call, so both tensors have to be cloned before they outlive this scope.
-    auto sampleTensor = torch::from_blob(
+    // from_blob does not own vesin's buffers. copy_() into persistent device
+    // tensors so a cached list does not allocate; vectors still move every step.
+    auto sampleSrc = torch::from_blob(
         const_cast<int32_t*>(raw.samples.data()), {nPairs, 5},
         torch::TensorOptions().dtype(torch::kInt32)
-    ).clone().to(device);
-    auto vectorTensor = torch::from_blob(
+    );
+    auto vectorSrc = torch::from_blob(
         const_cast<double*>(raw.vectors.data()), {nPairs, 3, 1},
         torch::TensorOptions().dtype(torch::kFloat64)
-    ).clone().to(device, dtype);
+    );
+    ensureTensor(
+        upload.samples, {nPairs, 5},
+        torch::TensorOptions().dtype(torch::kInt32).device(device)
+    );
+    ensureTensor(
+        upload.vectors, {nPairs, 3, 1},
+        torch::TensorOptions().dtype(dtype).device(device)
+    );
+    // register_autograd_neighbors() attaches the previous step's graph; drop it
+    // before copy_() or the next call refuses the same storage.
+    upload.samples.detach_();
+    upload.vectors.detach_();
+    if (nPairs > 0) {
+        upload.samples.copy_(sampleSrc);
+        upload.vectors.copy_(vectorSrc);
+    }
+    auto sampleTensor = upload.samples;
+    auto vectorTensor = upload.vectors;
 
     const vector<string> sampleNames = {
         "first_atom", "second_atom", "cell_shift_a", "cell_shift_b", "cell_shift_c"
@@ -639,15 +675,14 @@ public:
         }
         const size_t n = positions.size();
         // Vec3 is exactly {double data[3]}, so a vector<Vec3> is already a
-        // contiguous block of 3*n doubles: build `pos` with one memcpy-able
-        // range-construction instead of indexing through Vec3::operator[]
-        // per component, per atom.
+        // contiguous block of 3*n doubles. Reuse posFlat/cellFlat so a long
+        // trajectory does not reallocate the host staging buffers every step.
         static_assert(sizeof(Vec3) == 3 * sizeof(double), "Vec3 layout changed");
-        const double* flatPositions = reinterpret_cast<const double*>(positions.data());
-        vector<double> pos(flatPositions, flatPositions + 3 * n);
-        auto cell = cellRows(box, pbc);
+        posFlat.resize(3 * n);
+        std::memcpy(posFlat.data(), positions.data(), 3 * n * sizeof(double));
+        fillCellRows(box, pbc, cellFlat);
         try {
-            auto system = makeSystem("nm", typesHost, pos, pbc, cell);
+            auto system = makeSystem("nm", typesHost, posFlat, pbc, cellFlat);
             for (size_t i = 0; i < pairLists.size(); i++)
                 addPairsCore(
                     system, pairLists[i], *neighbors[i], positions, box, pbc,
@@ -735,6 +770,8 @@ public:
 
     mutable unique_ptr<metatomic::BaseModel> model;
     vector<int32_t> typesHost;
+    mutable vector<double> posFlat;
+    mutable vector<double> cellFlat;
     vector<metatomic::PairListOptions> pairLists;
     vector<double> pairListCutoffsNm;
     /// One per request, kept between compute() calls for the skin cache.
@@ -795,6 +832,7 @@ public:
         }
         info_.neighborListRequests = static_cast<int>(neighborRequests.size());
         neighbors.reserve(neighborRequests.size());
+        neighborUploads.resize(neighborRequests.size());
         for (size_t i = 0; i < neighborRequests.size(); i++)
             neighbors.push_back(make_unique<NeighborList>());
 
@@ -924,24 +962,31 @@ public:
         }
         const int64_t n = static_cast<int64_t>(positions.size());
         const bool autograd = info_.nonConservativeForceKey.empty();
-        auto posOptions = torch::TensorOptions().dtype(torch::kFloat64);
-        auto posCpu = torch::from_blob(
-            const_cast<Vec3*>(positions.data()), {n, 3}, posOptions
-        ).clone();
-        auto pos = posCpu.to(device, dtype);
-        if (autograd)
-            pos.set_requires_grad(true);
+        static_assert(sizeof(Vec3) == 3 * sizeof(double), "Vec3 layout changed");
+        auto posSrc = torch::from_blob(
+            const_cast<Vec3*>(positions.data()), {n, 3},
+            torch::TensorOptions().dtype(torch::kFloat64)
+        );
+        ensureTensor(
+            posDevice, {n, 3}, torch::TensorOptions().dtype(dtype).device(device)
+        );
+        posDevice.copy_(posSrc);
+        auto pos = autograd ? posDevice.detach().requires_grad_(true) : posDevice;
 
-        const auto cellHost = cellRows(box, pbcFlags);
-        auto cell = torch::from_blob(
-            const_cast<double*>(cellHost.data()), {3, 3}, posOptions
-        ).clone().to(device, dtype);
+        fillCellRows(box, pbcFlags, cellFlat);
+        auto cellSrc = torch::from_blob(
+            cellFlat.data(), {3, 3}, torch::TensorOptions().dtype(torch::kFloat64)
+        );
+        ensureTensor(
+            cellDevice, {3, 3}, torch::TensorOptions().dtype(dtype).device(device)
+        );
+        cellDevice.copy_(cellSrc);
 
-        auto system = torch::make_intrusive<metatomic_torch::SystemHolder>(types, pos, cell, pbc);
+        auto system = torch::make_intrusive<metatomic_torch::SystemHolder>(types, pos, cellDevice, pbc);
         for (size_t i = 0; i < neighborRequests.size(); i++)
             addNeighborList(
-                system, neighborRequests[i], *neighbors[i], positions, box, pbcFlags,
-                checkConsistency, device, dtype
+                system, neighborRequests[i], *neighbors[i], neighborUploads[i],
+                positions, box, pbcFlags, checkConsistency, device, dtype
             );
         for (const auto& input : extraInputs)
             system->add_data(input.first, input.second, /*override=*/false);
@@ -962,8 +1007,11 @@ public:
         result.energy = energyTensor.item<double>();
         result.forces.resize(static_cast<size_t>(n));
         static_assert(sizeof(Vec3) == 3 * sizeof(double), "Vec3 layout changed");
+        ensureTensor(
+            forceCpu, {n, 3},
+            torch::TensorOptions().dtype(torch::kFloat64).device(torch::kCPU)
+        );
 
-        torch::Tensor forceCpu;
         if (autograd) {
             energyTensor.backward();
             auto grad = system->positions().grad();
@@ -972,7 +1020,7 @@ public:
                     "MetatomicForce: model energy does not depend on positions; cannot compute forces"
                 );
             }
-            forceCpu = (-grad).to(torch::kCPU).to(torch::kFloat64).contiguous();
+            forceCpu.copy_(-grad);
         }
         else {
             auto forceMap = dict.at(info_.nonConservativeForceKey)
@@ -982,7 +1030,7 @@ public:
             // A direct force head can predict a non-zero total force; the
             // metatomic docs ask engines to remove it to avoid drift.
             forces = forces - forces.mean(0, /*keepdim=*/true);
-            forceCpu = forces.detach().to(torch::kCPU).to(torch::kFloat64).contiguous();
+            forceCpu.copy_(forces.detach());
         }
         std::memcpy(result.forces.data(), forceCpu.data_ptr<double>(), 3 * static_cast<size_t>(n) * sizeof(double));
 
@@ -1004,9 +1052,14 @@ public:
     vector<metatomic_torch::NeighborListOptions> neighborRequests;
     /// One per request, kept between compute() calls for the skin cache.
     mutable vector<unique_ptr<NeighborList>> neighbors;
+    mutable vector<NeighborUpload> neighborUploads;
     torch::Tensor types;
     vector<int> typesHost;
     torch::Tensor pbc;
+    mutable torch::Tensor posDevice;
+    mutable torch::Tensor cellDevice;
+    mutable torch::Tensor forceCpu;
+    mutable vector<double> cellFlat;
     array<bool, 3> pbcFlags = {false, false, false};
     vector<pair<string, metatensor_torch::TensorMap>> extraInputs;
     torch::Device device = torch::kCPU;

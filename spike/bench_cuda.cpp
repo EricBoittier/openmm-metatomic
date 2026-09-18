@@ -1,20 +1,22 @@
 /* -------------------------------------------------------------------------- *
  *                              OpenMM-Metatomic                              *
  * -------------------------------------------------------------------------- *
- * M3: what a CUDA-resident model costs through the CustomCPPForceImpl host
+ * M3/M4: what a CUDA-resident model costs through the CustomCPPForceImpl host
  * path. Three layers per case, so the overheads separate:
  *
  *   evaluator      MetatomicEvaluator::compute() on host positions: neighbor
- *                  list, host->device positions, forward, backward,
- *                  device->host forces.
+ *                  list, host->device copy into persistent buffers, forward,
+ *                  backward, device->host forces.
  *   Context        the same through OpenMM. On the CUDA platform OpenMM also
  *                  copies positions device->host and forces host->device
- *                  around our call, which is the host-path overhead M3 is
- *                  about; on Reference and CPU it hands over host buffers.
+ *                  around our call; on Reference and CPU it hands over host
+ *                  buffers.
  *   round trip     a bare N x 3 tensor host->device->host, the floor under our
- *                  two copies.
+ *                  two copies. M4 does not beat this — it just stops
+ *                  clone()+alloc on every step on top of it.
  *
- * Timing recipe as everywhere else here: round-robin warmup, then medians.
+ * Default sizes include a ~3k-atom box (1024 waters). Timing recipe as
+ * everywhere else here: round-robin warmup, then medians.
  * -------------------------------------------------------------------------- */
 
 #include "openmmmetatomic/MetatomicForce.h"
@@ -177,7 +179,7 @@ void printRows(const std::vector<Row>& rows) {
 int main(int argc, char** argv) {
     try {
         std::string modelPath;
-        std::vector<int> molecules = {32, 96, 256};
+        std::vector<int> molecules = {32, 96, 256, 1024};
         std::vector<std::string> devices = {"cpu", "cuda"};
         int warmup = 5;
         int repeats = 11;
@@ -199,7 +201,7 @@ int main(int argc, char** argv) {
             else if (arg == "--help" || arg == "-h") {
                 std::cout <<
                     "openmm-metatomic-bench-cuda --model model.pt\n"
-                    "  --n-mol 32,96,256  --devices cpu,cuda\n"
+                    "  --n-mol 32,96,256,1024  --devices cpu,cuda\n"
                     "  --warmup 5 --repeats 11 --md 10  (--md 0 skips MD)\n";
                 return 0;
             }

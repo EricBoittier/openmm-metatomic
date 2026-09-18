@@ -72,6 +72,11 @@ All notable changes to openmm-metatomic are documented here, following
   0/½/1, a reversed ML subset, every other water as ML (~1,000 discontiguous
   atoms), two native forces in one System, and a Langevin run that asserts
   the ML force group is silent on MM atoms.
+- **M8 docs (no feedstock, no plugin CI).** `docs/src/install.rst` covers the
+  cmake / `PYTHONPATH` / `OPENMM_PLUGIN_DIR` checkout path and
+  `MLPotential("metatomic-native")`. `docs/src/openmm_ml.rst` records the
+  missing virial path and that the native backend is an extra on top of
+  `MLPotential("metatomic")`.
 - Head-to-head on PET-MAD-XS, `examples/plot_16_native_vs_pythonforce.py`:
   identical Systems, one hot Context per backend, warmup evals and steps, then
   round-robin blocks of `getState` calls and of `step(N)` so that a machine
@@ -125,10 +130,18 @@ All notable changes to openmm-metatomic are documented here, following
     up with a model cheap enough that copies matter: on the `features.pt`
     toy at 3,000 atoms, ms/step is 3.04 (Reference) vs 3.28 (CUDA), and that
     model is *faster* on CPU (2.0 ms) than on the GPU (3.2 ms) anyway.
-  - **M4 (zero-copy DLPack) is therefore a no-go for now**, recorded in
-    ROADMAP.md: it would chase ≤1% of a realistic evaluation. Worth revisiting
-    only for a model whose GPU forward is around a millisecond at ≥10k atoms,
-    where the copies would finally be a visible share.
+  - **M4: persistent CUDA buffers.** The evaluator no longer `clone()`s
+    positions, cell, forces, and neighbor-list tensors on every step. It
+    `copy_()`s into reused device storage (and detaches neighbor tensors
+    before `register_autograd_neighbors`, which otherwise refuses the same
+    storage on the next call). `CustomCPPForceImpl` still downloads OpenMM
+    positions to the host; wrapping `posq` would mean a CUDA `ForceImpl`.
+    `test-cuda` walks 8 consecutive steps with moving positions, CPU vs CUDA.
+    `openmm-metatomic-bench-cuda` defaults include a 1024-water (3,072-atom)
+    box. The bare N×3 round trip is still ~26 µs at 96 atoms and ~50 µs at
+    3,072 — M4 stops paying an extra host clone on top of that, it does not
+    beat the floor. A wrap of OpenMM device buffers is only worth it if
+    `getPositions` beats the model forward at ≥10k atoms.
 - **Phase 3: pair lists are cached across steps.** Each of the model's
   neighbor-list requests now owns a `NeighborList` that lives as long as the
   evaluator, and vesin is asked for a Verlet skin
