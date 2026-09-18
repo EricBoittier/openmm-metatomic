@@ -19,7 +19,10 @@ Systems: vacuum water and toluene (pure ML), toluene in explicit water
 OpenMM CPU/Reference, Torch CPU, and Torch CUDA when a GPU is visible.
 """
 
+import gc
+import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -53,8 +56,9 @@ from _petmad import (
 )
 
 NM_TO_ANG = 10.0
-EVALS = 25
-MD_STEPS = 30
+_GALLERY = "sphinx_gallery" in sys.modules or os.environ.get("SPHINX_GALLERY_RUNNING")
+EVALS = 5 if _GALLERY else 25
+MD_STEPS = 5 if _GALLERY else 30
 
 
 def time_openmm(label, topology, positions, model_path, platform, mixed=None, n_eval=None, n_md=None):
@@ -76,10 +80,12 @@ def time_openmm(label, topology, positions, model_path, platform, mixed=None, n_
     integrator = mm.LangevinMiddleIntegrator(
         300 * unit.kelvin, 1.0 / unit.picosecond, 0.001 * unit.picoseconds
     )
-    _, t_ctx = timed(
+    ctx, t_ctx = timed(
         lambda: mm.Context(system, mm.VerletIntegrator(0.001), platform),
         repeat=1,
     )
+    del ctx
+    gc.collect()
     simulation = app.Simulation(topology, system, integrator, platform)
     simulation.context.setPositions(positions)
 
@@ -87,22 +93,25 @@ def time_openmm(label, topology, positions, model_path, platform, mixed=None, n_
         return simulation.context.getState(getEnergy=True, getForces=True)
 
     _, t_first = timed(energy, repeat=1)
-    _, t_eval = timed(energy, repeat=n_eval, warmup=2)
-    try:
-        _, t_md = timed(lambda: simulation.step(n_md), repeat=1)
-        md_ms = float(np.median(t_md) * 1e3) / n_md
-        md_str = format_ms(t_md)
-    except Exception as exc:
-        t_md = np.array([np.nan])
+    _, t_eval = timed(energy, repeat=max(1, n_eval), warmup=1)
+    if n_md > 0:
+        try:
+            _, t_md = timed(lambda: simulation.step(n_md), repeat=1)
+            md_ms = float(np.median(t_md) * 1e3) / n_md
+            md_str = format_ms(t_md)
+        except Exception as exc:
+            md_ms = np.nan
+            md_str = f"skipped ({type(exc).__name__})"
+    else:
         md_ms = np.nan
-        md_str = f"skipped ({type(exc).__name__})"
+        md_str = "skipped"
     print(
         f"{label:<28} {platform.getName():<10}  "
         f"createSystem {format_ms(t_sys)}  Context {format_ms(t_ctx)}  "
         f"first {format_ms(t_first)}  eval {format_ms(t_eval)}  "
         f"{n_md} MD steps {md_str}"
     )
-    return {
+    row = {
         "label": label,
         "platform": platform.getName(),
         "create": float(np.median(t_sys) * 1e3),
@@ -111,6 +120,9 @@ def time_openmm(label, topology, positions, model_path, platform, mixed=None, n_
         "eval": float(np.median(t_eval) * 1e3),
         "md": md_ms,
     }
+    del simulation
+    gc.collect()
+    return row
 
 
 def time_direct(label, model_path, numbers, positions, device):
@@ -215,6 +227,8 @@ with tempfile.TemporaryDirectory() as tmp:
                     t_model,
                     platform,
                     mixed=(mm_system, list(range(15))),
+                    n_eval=2 if _GALLERY else EVALS,
+                    n_md=0 if _GALLERY else MD_STEPS,
                 )
             )
 

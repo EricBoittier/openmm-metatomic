@@ -14,6 +14,9 @@ the pairlist-construction cost is visible too. Water molecules are tiled on a
 cubic lattice wide enough to keep the neighbor list sparse.
 """
 
+import gc
+import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -40,6 +43,8 @@ WATER_TYPES = SYSTEMS["water"]["types"]
 SYMBOLS = {1: "H", 8: "O"}
 SPACING = 6.0  # angstrom; bigger than the 4 A cutoff keeps the neighbor list sparse
 N_MOLECULES = [1, 10, 100, 1000, 5000, 20000]
+if "sphinx_gallery" in sys.modules or os.environ.get("SPHINX_GALLERY_RUNNING"):
+    N_MOLECULES = [1, 10, 100]
 
 
 def water_cluster(n_molecules: int, spacing: float = SPACING, seed: int = 0):
@@ -67,9 +72,11 @@ def time_case(topology, positions, model_path, platform, n_eval, n_md):
     integrator = mm.LangevinMiddleIntegrator(
         300 * unit.kelvin, 1.0 / unit.picosecond, 1.0 * unit.femtoseconds
     )
-    _, t_ctx = timed(
+    ctx, t_ctx = timed(
         lambda: mm.Context(system, mm.VerletIntegrator(0.001), platform), repeat=1
     )
+    del ctx
+    gc.collect()
     simulation = app.Simulation(topology, system, integrator, platform)
     simulation.context.setPositions(positions)
 

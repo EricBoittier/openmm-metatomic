@@ -1,11 +1,12 @@
 """Round-trip MetatomicForce through the version-2 XML proxy."""
 
-import openmm as mm
 import pytest
 
+pytest.importorskip("openmm")
 pytest.importorskip("openmmmetatomic")
 
-from openmmmetatomic import MetatomicForce
+import openmm as mm  # noqa: E402
+from openmmmetatomic import MetatomicForce  # noqa: E402
 
 
 def configured():

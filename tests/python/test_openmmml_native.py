@@ -12,23 +12,23 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
-import openmm as mm
-import openmm.app as app
-import openmm.unit as unit
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples"))
 
 torch = pytest.importorskip("torch", reason="torch is not installed")
 mta = pytest.importorskip("metatomic.torch", reason="metatomic-torch is not installed")
+pytest.importorskip("openmm", reason="openmm is not installed")
 pytest.importorskip("openmmml", reason="openmm-ml is not installed")
+pytest.importorskip("openmmmetatomic")
 
+import openmm as mm  # noqa: E402
+import openmm.app as app  # noqa: E402
+import openmm.unit as unit  # noqa: E402
 from metatensor.torch import Labels, TensorBlock, TensorMap  # noqa: E402
 
 import _openmm  # noqa: E402
 from openmmml import MLPotential  # noqa: E402
-
-pytest.importorskip("openmmmetatomic")
 import openmmmetatomic  # noqa: E402
 
 ML_ATOMS = list(range(15))
