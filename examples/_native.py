@@ -28,6 +28,16 @@ def _ensure_python_path() -> None:
         os.environ.setdefault("OPENMM_PLUGIN_DIR", str(plugin))
 
 
+def native_available() -> bool:
+    """True when the SWIG module can be imported (plugin built in ``build/``)."""
+    _ensure_python_path()
+    try:
+        import openmmmetatomic  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def MetatomicForce():
     _ensure_python_path()
     from openmmmetatomic import MetatomicForce as cls

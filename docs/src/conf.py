@@ -42,12 +42,32 @@ intersphinx_mapping = {
     "torch": ("https://docs.pytorch.org/docs/stable/", None),
 }
 
+def _native_plugin_importable() -> bool:
+    built = os.path.join(ROOT, "build", "python")
+    if built not in sys.path:
+        sys.path.insert(0, built)
+    try:
+        import openmmmetatomic  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+_ignore = r"^_|README"
+if not _native_plugin_importable():
+    # Docs CI does not compile the plugin; those examples stay in the tree
+    # and run locally once ``build/python`` exists.
+    _ignore += r"|plot_11_|plot_12_|plot_13_|plot_16_|plot_17_"
+
 sphinx_gallery_conf = {
     "examples_dirs": os.path.join(ROOT, "examples"),
     "gallery_dirs": os.path.join(ROOT, "docs", "src", "examples"),
     "filename_pattern": r"plot_",
-    "ignore_pattern": r"^_|README",
-    "copyfile_regex": r"_harmonic\.py|_openmm\.py|_petmad\.py|_bpnn\.py|_native\.py",
+    "ignore_pattern": _ignore,
+    "copyfile_regex": (
+        r"_harmonic\.py|_openmm\.py|_petmad\.py|_bpnn\.py|_native\.py|"
+        r"_complex_mixed\.py"
+    ),
     "within_subsection_order": FileNameSortKey,
     "remove_config_comments": True,
     "matplotlib_animations": False,

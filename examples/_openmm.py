@@ -213,10 +213,15 @@ def ensure_openmm_ml_embeddings():
     entry points (editable / PYTHONPATH checkout)."""
     from openmmml import MLPotential
 
-    if "mechanical" in MLPotential._embeddingFactories:
+    factories = getattr(MLPotential, "_embeddingFactories", None)
+    if factories is None:
         return
-    from openmmml.embeddings.mechanicalembedding import MechanicalEmbeddingFactory
-
+    if "mechanical" in factories:
+        return
+    try:
+        from openmmml.embeddings.mechanicalembedding import MechanicalEmbeddingFactory
+    except ImportError:
+        return
     MLPotential.registerEmbeddingFactory("mechanical", MechanicalEmbeddingFactory())
 
 

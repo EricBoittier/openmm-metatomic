@@ -207,7 +207,11 @@ def load_saved_tables(path: Path):
 rows = []
 binary = settings_binary()
 launches = max(1, int(os.environ.get("OPENMM_METATOMIC_BENCH_LAUNCHES", "1")))
-replay = Path(__file__).resolve().parent / "plots" / "bench_settings.txt"
+try:
+    _here = Path(__file__).resolve().parent
+except NameError:
+    _here = Path(os.environ.get("OPENMM_METATOMIC_ROOT", ".")).resolve() / "examples"
+replay = _here / "plots" / "bench_settings.txt"
 if os.environ.get("OPENMM_METATOMIC_BENCH_REPLAY") and replay.is_file():
     tables = load_saved_tables(replay)
     rows = median_launches(tables) if tables else []
@@ -229,7 +233,7 @@ elif binary is not None:
             tables.append(parsed)
     if tables:
         rows = median_launches(tables) if launches > 1 else tables[0]
-        out = Path(__file__).resolve().parent / "plots"
+        out = _here / "plots"
         out.mkdir(exist_ok=True)
         (out / "bench_settings.txt").write_text("\n\n".join(stdout_all))
 if not rows:
@@ -295,7 +299,7 @@ else:
     axes[1].set_visible(False)
 
 fig.tight_layout()
-save_figure(fig, __file__)
+save_figure(fig, _here / "plot_13_settings.py")
 
 print(f"{'case':<56} {'N':>8} {'eval':>10} {'nve':>10} {'nvt':>10} {'drift':>12}")
 for row in rows:

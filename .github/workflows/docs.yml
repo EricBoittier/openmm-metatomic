@@ -35,11 +35,11 @@ jobs:
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           grep -vE '^torch$' docs/requirements.txt > /tmp/docs-req.txt
           python -m pip install -r /tmp/docs-req.txt
-          python -m pip install "openmmml @ git+https://github.com/EricBoittier/openmm-ml.git"
+          python -m pip install "openmmml @ git+https://github.com/EricBoittier/openmm-ml.git@metatomic-potential"
 
       - name: OpenMM-ML test data
         run: |
-          git clone --depth 1 https://github.com/EricBoittier/openmm-ml.git /tmp/openmm-ml
+          git clone --depth 1 -b metatomic-potential https://github.com/EricBoittier/openmm-ml.git /tmp/openmm-ml
           echo "OPENMM_ML_TEST_DATA=/tmp/openmm-ml/test/data" >> "$GITHUB_ENV"
 
       - name: Build HTML
