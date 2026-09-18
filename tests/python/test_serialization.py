@@ -3,6 +3,8 @@
 import openmm as mm
 import pytest
 
+pytest.importorskip("openmmmetatomic")
+
 from openmmmetatomic import MetatomicForce
 
 

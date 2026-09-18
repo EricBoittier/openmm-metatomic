@@ -5,8 +5,16 @@ All notable changes to openmm-metatomic are documented here, following
 
 ## [Unreleased]
 
+### Changed
+
+- README: drop the incorrect ``model.mta`` example (``.mta`` is a serialized
+  System, not a plugin model), and document tests plus coverage.
+
 ### Added
 
+- Pytest for gallery helpers, the native OpenMM-ML adapter, and a
+  ``.mta`` System round-trip; ``.github/workflows/tests.yml`` publishes
+  coverage. Plugin suites skip when ``openmmmetatomic`` is not importable.
 - **`MetatomicForce` now matches `MLPotential("metatomic")` feature for
   feature, and is available as an OpenMM-ML backend.**
   `MLPotential("metatomic-native")` (module `openmmmetatomic.openmmml`,

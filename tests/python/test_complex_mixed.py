@@ -29,6 +29,7 @@ import _openmm  # noqa: E402
 import _complex_mixed as _cm  # noqa: E402
 from openmmml import MLPotential  # noqa: E402
 
+pytest.importorskip("openmmmetatomic")
 import openmmmetatomic  # noqa: E402
 
 if _cm.alanine_path() is None:

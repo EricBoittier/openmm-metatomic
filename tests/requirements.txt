@@ -1,0 +1,7 @@
+pytest
+pytest-cov
+matplotlib
+numpy
+torch
+metatomic-torch
+metatensor-torch

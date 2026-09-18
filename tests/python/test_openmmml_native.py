@@ -28,6 +28,7 @@ from metatensor.torch import Labels, TensorBlock, TensorMap  # noqa: E402
 import _openmm  # noqa: E402
 from openmmml import MLPotential  # noqa: E402
 
+pytest.importorskip("openmmmetatomic")
 import openmmmetatomic  # noqa: E402
 
 ML_ATOMS = list(range(15))

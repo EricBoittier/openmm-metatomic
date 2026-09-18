@@ -21,6 +21,10 @@ __pycache__/
 .eggs/
 dist/
 .pytest_cache/
+.coverage
+coverage.xml
+coverage.md
+htmlcov/
 .venv/
 venv/
 

@@ -1,0 +1,54 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          grep -vE '^torch$' tests/requirements.txt > /tmp/tests-req.txt
+          python -m pip install -r /tmp/tests-req.txt
+
+      - name: Pytest with coverage
+        env:
+          PYTHONPATH: ${{ github.workspace }}/examples
+        run: |
+          python -m pytest tests/python \
+            --cov=_openmm \
+            --cov-report=term-missing \
+            --cov-report=xml
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          python -m coverage report >> "$GITHUB_STEP_SUMMARY" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: python-coverage
+          path: coverage.xml
+          if-no-files-found: ignore
+          retention-days: 14

@@ -69,3 +69,18 @@ C++ drivers
 ``openmm-metatomic-bench-cuda`` load OpenMM platform plugins from
 ``$OPENMM_DIR/lib/plugins``. Override with ``OPENMM_METATOMIC_PLUGINS_DIR`` or
 ``--plugins-dir``. Without that they only see ``Reference``.
+
+Tests
+-----
+
+::
+
+    ctest --test-dir build --output-on-failure
+
+    python -m pip install -r tests/requirements.txt
+    python -m pytest tests/python --cov=_openmm --cov-report=term-missing
+
+``ctest`` runs the C++ spikes and the Python files under ``tests/python/``.
+Pytest skips plugin-only tests when ``openmmmetatomic`` is not importable.
+``.mta`` is a serialized System (see ``tests/python/test_mta_system.py``), not
+a model checkpoint.
