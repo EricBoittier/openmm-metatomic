@@ -16,6 +16,7 @@ _mtt = (
 if os.path.isfile(_mtt):
     os.environ.setdefault("OPENMM_METATOMIC_MTT", _mtt)
 os.environ.setdefault("MPLBACKEND", "Agg")
+os.environ.setdefault("SPHINX_GALLERY_RUNNING", "1")
 
 project = "openmm-metatomic"
 author = "Eric D. Boittier"

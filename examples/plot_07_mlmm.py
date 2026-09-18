@@ -19,6 +19,9 @@ dipeptide, and a λ-interpolation between MM and ML internals.
 """
 
 from pathlib import Path
+import gc
+import os
+import sys
 import tempfile
 
 import matplotlib.pyplot as plt
@@ -52,6 +55,8 @@ def run_context(system, positions, platform):
     return context, energy, forces
 
 
+_GALLERY = "sphinx_gallery" in sys.modules or os.environ.get("SPHINX_GALLERY_RUNNING")
+
 data = openmm_ml_data()
 platform = preferred_platforms()[0]
 labels, energies = [], []
@@ -84,46 +89,54 @@ with tempfile.TemporaryDirectory() as tmp:
             f"toluene-explicit  N={n_atoms}  ML={len(ml_atoms)}  "
             f"E_MM={e_mm:.6e}  E_mixed={e_mixed:.6e}"
         )
-        try:
-            interp = mixed_system(
-                potential, prmtop.topology, mm_system, ml_atoms, interpolate=True
-            )
-            interp_context, e_l1, _ = run_context(interp, inpcrd.positions, platform)
-            interp_context.setParameter("lambda_interpolate", 0)
-            e_l0 = potential_energy(interp_context)
-            print(f"  λ-interpolate  λ=1 {e_l1:.6e}  λ=0 {e_l0:.6e}")
-            assert np.isclose(e_mixed, e_l1, rtol=1e-4)
-            assert np.isclose(e_mm, e_l0, rtol=1e-4)
-            labels.extend(["λ=1 (ML)", "λ=0 (MM)"])
-            energies.extend([e_l1, e_l0])
-        except Exception as exc:
-            print(
-                "  λ-interpolate skipped: PythonForce cannot be cloned into "
-                f"CustomCVForce ({type(exc).__name__}: {exc})"
-            )
+        del mixed_context
+        gc.collect()
+        if not _GALLERY:
+            try:
+                interp = mixed_system(
+                    potential, prmtop.topology, mm_system, ml_atoms, interpolate=True
+                )
+                interp_context, e_l1, _ = run_context(interp, inpcrd.positions, platform)
+                interp_context.setParameter("lambda_interpolate", 0)
+                e_l0 = potential_energy(interp_context)
+                print(f"  λ-interpolate  λ=1 {e_l1:.6e}  λ=0 {e_l0:.6e}")
+                assert np.isclose(e_mixed, e_l1, rtol=1e-4)
+                assert np.isclose(e_mm, e_l0, rtol=1e-4)
+                labels.extend(["λ=1 (ML)", "λ=0 (MM)"])
+                energies.extend([e_l1, e_l0])
+                del interp_context
+            except Exception as exc:
+                print(
+                    "  λ-interpolate skipped: PythonForce cannot be cloned into "
+                    f"CustomCVForce ({type(exc).__name__}: {exc})"
+                )
 
-        try:
-            integrator = mm.LangevinMiddleIntegrator(
-                300 * unit.kelvin, 1.0 / unit.picosecond, 0.0005 * unit.picoseconds
-            )
-            simulation = app.Simulation(prmtop.topology, mixed, integrator, platform)
-            simulation.context.setPositions(inpcrd.positions)
-            simulation.minimizeEnergy(maxIterations=5)
-            simulation.step(10)
-            e_md = potential_energy(simulation.context)
-            print(f"toluene mixed  10 fs Langevin after 5 min steps  E={e_md:.6e}")
-        except Exception as exc:
-            print(
-                "toluene mixed MD skipped "
-                f"({type(exc).__name__}: {exc}). The toy well is centered on the "
-                "vacuum PDB, not the solvated rst7 coordinates; use PET-MAD "
-                "(plot_05) for a real mixed trajectory."
-            )
+            try:
+                integrator = mm.LangevinMiddleIntegrator(
+                    300 * unit.kelvin, 1.0 / unit.picosecond, 0.0005 * unit.picoseconds
+                )
+                simulation = app.Simulation(prmtop.topology, mixed, integrator, platform)
+                simulation.context.setPositions(inpcrd.positions)
+                simulation.minimizeEnergy(maxIterations=5)
+                simulation.step(10)
+                e_md = potential_energy(simulation.context)
+                print(f"toluene mixed  10 fs Langevin after 5 min steps  E={e_md:.6e}")
+                del simulation
+            except Exception as exc:
+                print(
+                    "toluene mixed MD skipped "
+                    f"({type(exc).__name__}: {exc}). The toy well is centered on the "
+                    "vacuum PDB, not the solvated rst7 coordinates; use PET-MAD "
+                    "(plot_05) for a real mixed trajectory."
+                )
+            gc.collect()
     else:
         print("openmm-ml toluene-explicit data not found; skipping Amber mixed system")
 
     ala = None if data is None else data / "alanine-dipeptide" / "alanine-dipeptide-explicit.pdb"
-    if ala is not None and ala.is_file():
+    if _GALLERY:
+        print("gallery: skip alanine-dipeptide mixed system")
+    elif ala is not None and ala.is_file():
         pdb = app.PDBFile(str(ala))
         peptide = [atom.index for atom in next(pdb.topology.chains()).atoms()]
         atoms = list(pdb.topology.atoms())
@@ -142,13 +155,15 @@ with tempfile.TemporaryDirectory() as tmp:
         mixed = mixed_system(potential, pdb.topology, mm_system, peptide)
         n_atoms = pdb.topology.getNumAtoms()
         _, e_mm, _ = run_context(mm_system, pos, platform)
-        _, e_mixed, _ = run_context(mixed, pos, platform)
+        mixed_ctx, e_mixed, _ = run_context(mixed, pos, platform)
         print(
             f"alanine-dipeptide  N={n_atoms}  ML={len(peptide)} (ACE-ALA-NME)  "
             f"E_MM={e_mm:.6e}  E_mixed={e_mixed:.6e}"
         )
         labels.extend(["peptide MM", "peptide mixed"])
         energies.extend([e_mm, e_mixed])
+        del mixed_ctx
+        gc.collect()
     else:
         print("alanine-dipeptide PDB not found; skipping ForceField mixed system")
 

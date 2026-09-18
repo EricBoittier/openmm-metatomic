@@ -166,7 +166,7 @@ with tempfile.TemporaryDirectory() as tmp:
         str(tmp / "water-nl.pt"), w_rest, w_numbers, neighbor_list=True
     )
 
-    for plat in preferred_platforms():
+    for plat in preferred_platforms()[: 1 if _GALLERY else None]:
         records.append(
             time_openmm(
                 "water vacuum ML",
@@ -215,7 +215,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
         prm = data / "toluene" / "toluene-explicit.prm7"
         rst = data / "toluene" / "toluene-explicit.rst7"
-        if prm.is_file():
+        if prm.is_file() and not _GALLERY:
             prmtop = app.AmberPrmtopFile(str(prm))
             inpcrd = app.AmberInpcrdFile(str(rst))
             mm_system = prmtop.createSystem(nonbondedMethod=app.PME)
@@ -227,10 +227,10 @@ with tempfile.TemporaryDirectory() as tmp:
                     t_model,
                     platform,
                     mixed=(mm_system, list(range(15))),
-                    n_eval=2 if _GALLERY else EVALS,
-                    n_md=0 if _GALLERY else MD_STEPS,
                 )
             )
+        elif prm.is_file():
+            print("gallery: skip mixed toluene-explicit timings (6k-atom PythonForce)")
 
 # PET-MAD-XS: real Hub model, fewer repeats because each call is a foundation-model eval.
 try:
@@ -248,8 +248,8 @@ if pet_pt is not None and pet_pt.is_file():
             pet_pos,
             str(pet_pt),
             platform,
-            n_eval=8,
-            n_md=12,
+            n_eval=2 if _GALLERY else 8,
+            n_md=0 if _GALLERY else 12,
         )
     )
     _, t_direct = timed(
