@@ -100,7 +100,8 @@ bool useVesinNeighbors() {
 }
 
 RawNeighborPairs computeNeighborPairsNaive(
-    const vector<Vec3>& positions, const Vec3 box[3], bool periodic, double cutoff, bool full
+    const vector<Vec3>& positions, const Vec3 box[3], const array<bool, 3>& pbc,
+    double cutoff, bool full
 ) {
     const int n = static_cast<int>(positions.size());
     const double cutoff2 = cutoff * cutoff;
@@ -110,18 +111,17 @@ RawNeighborPairs computeNeighborPairsNaive(
     auto length = [](const Vec3& v) {
         return std::sqrt(v.dot(v));
     };
-    int na = 0, nb = 0, nc = 0;
-    if (periodic) {
-        auto images = [&](const Vec3& v) {
-            const double len = length(v);
-            if (len < 1e-12)
-                throw OpenMMException("MetatomicForce: periodic box vector has zero length");
-            return max(1, static_cast<int>(std::ceil(cutoff / len)));
-        };
-        na = images(box[0]);
-        nb = images(box[1]);
-        nc = images(box[2]);
-    }
+    auto images = [&](const Vec3& v, bool axisPeriodic) {
+        if (!axisPeriodic)
+            return 0;
+        const double len = length(v);
+        if (len < 1e-12)
+            throw OpenMMException("MetatomicForce: periodic box vector has zero length");
+        return max(1, static_cast<int>(std::ceil(cutoff / len)));
+    };
+    const int na = images(box[0], pbc[0]);
+    const int nb = images(box[1], pbc[1]);
+    const int nc = images(box[2], pbc[2]);
     auto consider = [&](int i, int j, int sa, int sb, int sc) {
         if (i == j && sa == 0 && sb == 0 && sc == 0)
             return;
@@ -151,15 +151,79 @@ RawNeighborPairs computeNeighborPairsNaive(
     return out;
 }
 
-RawNeighborPairs computeNeighborPairs(
-    const vector<Vec3>& positions, const Vec3 box[3], bool periodic, double cutoff, bool full
-) {
+/**
+ * Verlet skin, in nm, for vesin's cached topology; 0 disables caching.
+ *
+ * vesin builds its candidate list with cutoff + skin and reuses it until an
+ * atom moves more than skin / 2 (it tracks the cell as well, so a barostat is
+ * safe). The returned pairs are always inside the cutoff either way.
+ *
+ * The default is measured, not guessed: on a 0.75 nm full list (what PET-MAD-XS
+ * asks for) a cached call costs 0.42 ms at 288 atoms and 5.5 ms at 3,000
+ * against 0.71 and 8.2 ms for a fresh build, and a rebuild costs 2.1 and
+ * 24 ms. Larger skins make every step pay for more candidates and make the
+ * rebuilds much more expensive, so they lose on both counts.
+ */
+double neighborSkinNm() {
+    // Read every call, like OPENMM_METATOMIC_NEIGHBOR_LIST above: it costs a
+    // getenv against a pair-list build, and it keeps the knob testable in a
+    // single process.
+    const char* value = std::getenv("OPENMM_METATOMIC_NEIGHBOR_SKIN");
+    if (value == nullptr || value[0] == '\0')
+        return 0.05;
+    try {
+        return max(0.0, std::stod(value));
+    }
+    catch (const exception&) {
+        throw OpenMMException(
+            "MetatomicForce: OPENMM_METATOMIC_NEIGHBOR_SKIN must be a length in nm"
+        );
+    }
+}
+
+/**
+ * One of the model's pair-list requests, kept alive across compute() calls.
+ *
+ * Holding on to vesin's list is what makes the skin cache work at all: the
+ * cached topology lives inside the list object, so freeing it after every
+ * evaluation (as this code used to) threw the cache away every step. The output
+ * buffers are reused for the same reason.
+ */
+class NeighborList {
+public:
+    NeighborList() = default;
+    NeighborList(const NeighborList&) = delete;
+    NeighborList& operator=(const NeighborList&) = delete;
+
+    ~NeighborList() {
 #ifdef OPENMM_METATOMIC_USE_VESIN
-    if (useVesinNeighbors()) {
-        const int n = static_cast<int>(positions.size());
-        RawNeighborPairs out;
-        vector<array<double, 3>> points(static_cast<size_t>(n));
-        for (int i = 0; i < n; i++) {
+        vesin_free(&cached);
+#endif
+    }
+
+    const RawNeighborPairs& compute(
+        const vector<Vec3>& positions, const Vec3 box[3], const array<bool, 3>& pbc,
+        double cutoff, bool full
+    ) {
+#ifdef OPENMM_METATOMIC_USE_VESIN
+        if (useVesinNeighbors()) {
+            buildWithVesin(positions, box, pbc, cutoff, full);
+            return pairs;
+        }
+#endif
+        pairs = computeNeighborPairsNaive(positions, box, pbc, cutoff, full);
+        return pairs;
+    }
+
+private:
+#ifdef OPENMM_METATOMIC_USE_VESIN
+    void buildWithVesin(
+        const vector<Vec3>& positions, const Vec3 box[3], const array<bool, 3>& pbc,
+        double cutoff, bool full
+    ) {
+        const size_t n = positions.size();
+        points.resize(n);
+        for (size_t i = 0; i < n; i++) {
             points[i][0] = positions[i][0];
             points[i][1] = positions[i][1];
             points[i][2] = positions[i][2];
@@ -169,51 +233,120 @@ RawNeighborPairs computeNeighborPairs(
             {box[1][0], box[1][1], box[1][2]},
             {box[2][0], box[2][1], box[2][2]},
         };
-        bool pbc[3] = {periodic, periodic, periodic};
+        bool vesinPbc[3] = {pbc[0], pbc[1], pbc[2]};
         VesinOptions options{};
         options.cutoff = cutoff;
         options.full = full;
         options.sorted = false;
         options.algorithm = VesinAutoAlgorithm;
-        options.skin = 0.0;
+        options.skin = neighborSkinNm();
         options.n_threads = 0;
         options.return_shifts = true;
         options.return_distances = false;
         options.return_vectors = true;
-        VesinNeighborList neighbors{};
         const char* error = nullptr;
         const int status = vesin_neighbors(
             reinterpret_cast<const double(*)[3]>(points.data()),
-            static_cast<size_t>(n),
+            n,
             cell,
-            pbc,
+            vesinPbc,
             VesinDevice{VesinCPU, 0},
             options,
-            &neighbors,
+            &cached,
             &error
         );
         if (status != 0) {
             string message = error ? error : "vesin neighbor list failed";
-            vesin_free(&neighbors);
+            vesin_free(&cached);
+            cached = VesinNeighborList{};
             throw OpenMMException("MetatomicForce: " + message);
         }
-        out.samples.resize(neighbors.length * 5);
-        out.vectors.resize(neighbors.length * 3);
-        for (size_t k = 0; k < neighbors.length; k++) {
-            out.samples[5 * k + 0] = static_cast<int32_t>(neighbors.pairs[k][0]);
-            out.samples[5 * k + 1] = static_cast<int32_t>(neighbors.pairs[k][1]);
-            out.samples[5 * k + 2] = neighbors.shifts ? neighbors.shifts[k][0] : 0;
-            out.samples[5 * k + 3] = neighbors.shifts ? neighbors.shifts[k][1] : 0;
-            out.samples[5 * k + 4] = neighbors.shifts ? neighbors.shifts[k][2] : 0;
-            out.vectors[3 * k + 0] = neighbors.vectors[k][0];
-            out.vectors[3 * k + 1] = neighbors.vectors[k][1];
-            out.vectors[3 * k + 2] = neighbors.vectors[k][2];
+        pairs.samples.resize(cached.length * 5);
+        pairs.vectors.resize(cached.length * 3);
+        for (size_t k = 0; k < cached.length; k++) {
+            pairs.samples[5 * k + 0] = static_cast<int32_t>(cached.pairs[k][0]);
+            pairs.samples[5 * k + 1] = static_cast<int32_t>(cached.pairs[k][1]);
+            pairs.samples[5 * k + 2] = cached.shifts ? cached.shifts[k][0] : 0;
+            pairs.samples[5 * k + 3] = cached.shifts ? cached.shifts[k][1] : 0;
+            pairs.samples[5 * k + 4] = cached.shifts ? cached.shifts[k][2] : 0;
+            pairs.vectors[3 * k + 0] = cached.vectors[k][0];
+            pairs.vectors[3 * k + 1] = cached.vectors[k][1];
+            pairs.vectors[3 * k + 2] = cached.vectors[k][2];
         }
-        vesin_free(&neighbors);
-        return out;
     }
+
+    VesinNeighborList cached{};
+    vector<array<double, 3>> points;
 #endif
-    return computeNeighborPairsNaive(positions, box, periodic, cutoff, full);
+    RawNeighborPairs pairs;
+};
+
+// Only periodic directions contribute a cell row; a non-periodic direction is
+// zeroed, matching what OpenMM-ML sends for a partially periodic box.
+vector<double> cellRows(const Vec3 box[3], const array<bool, 3>& pbc) {
+    vector<double> cell(9, 0.0);
+    for (int i = 0; i < 3; i++) {
+        if (!pbc[i])
+            continue;
+        cell[3 * i + 0] = box[i][0];
+        cell[3 * i + 1] = box[i][1];
+        cell[3 * i + 2] = box[i][2];
+    }
+    return cell;
+}
+
+// Match an available output name against a requested base name and an optional
+// variant: "energy" or "energy/<variant>".
+string pickOutputName(
+    const vector<string>& available, const string& base, const string& variant
+) {
+    const string wanted = variant.empty() ? base : base + "/" + variant;
+    for (const auto& name : available)
+        if (name == wanted)
+            return name;
+    if (!variant.empty())
+        throw OpenMMException(
+            "MetatomicForce: model does not provide output '" + wanted + "'"
+        );
+    return "";
+}
+
+void warnUncertainty(const vector<double>& uncertainty, double threshold) {
+    string atoms;
+    for (size_t i = 0; i < uncertainty.size(); i++) {
+        if (uncertainty[i] <= threshold)
+            continue;
+        if (!atoms.empty())
+            atoms += ", ";
+        atoms += to_string(i);
+    }
+    if (atoms.empty())
+        return;
+    fprintf(
+        stderr,
+        "MetatomicForce warning: per-atom energy uncertainty is above the threshold "
+        "of %g eV for atoms %s\n",
+        threshold, atoms.c_str()
+    );
+}
+
+// A per-system scalar input ("charge", "spin_multiplicity"): a single block
+// with one sample named "system" and one property named after the input.
+metatensor::TensorMap systemScalar(const string& name, double value) {
+    auto values = make_unique<metatensor::SimpleDataArray<double>>(
+        vector<uintptr_t>{1, 1}, vector<double>{value}
+    );
+    metatensor::TensorBlock block(
+        std::move(values),
+        metatensor::Labels({"system"}, {{0}}),
+        {},
+        metatensor::Labels({name}, {{0}})
+    );
+    vector<metatensor::TensorBlock> blocks;
+    blocks.push_back(std::move(block));
+    metatensor::TensorMap tensor(metatensor::Labels({"_"}, {{0}}), std::move(blocks));
+    tensor.set_info("unit", name == "charge" ? "e" : "");
+    return tensor;
 }
 
 // Core backend: attach a pair list to a metatomic::System (C++ API) using
@@ -221,13 +354,14 @@ RawNeighborPairs computeNeighborPairs(
 void addPairsCore(
     metatomic::System& system,
     const metatomic::PairListOptions& options,
+    NeighborList& neighbors,
     const vector<Vec3>& positions,
     const Vec3 box[3],
-    bool periodic,
+    const array<bool, 3>& pbc,
     double cutoffNm,
     bool checkConsistency
 ) {
-    const auto raw = computeNeighborPairs(positions, box, periodic, cutoffNm, options.full_list());
+    const auto& raw = neighbors.compute(positions, box, pbc, cutoffNm, options.full_list());
     const auto nPairs = static_cast<uintptr_t>(raw.size());
 
     const vector<string> sampleNames = {
@@ -265,26 +399,57 @@ torch::Dtype parseDtype(const string& name) {
     throw OpenMMException("MetatomicForce: unsupported model dtype '" + name + "'");
 }
 
+// Torch mirror of systemScalar(): a single-block TensorMap holding one
+// per-system value, tagged with the unit metatomic expects for that input.
+metatensor_torch::TensorMap systemScalarTorch(
+    const string& name, double value, torch::Dtype dtype, torch::Device device
+) {
+    auto intOptions = torch::TensorOptions().dtype(torch::kInt32);
+    auto samples = torch::make_intrusive<metatensor_torch::LabelsHolder>(
+        vector<string>{"system"}, torch::zeros({1, 1}, intOptions)
+    );
+    auto properties = torch::make_intrusive<metatensor_torch::LabelsHolder>(
+        vector<string>{name}, torch::zeros({1, 1}, intOptions)
+    );
+    auto values = torch::full({1, 1}, value, torch::TensorOptions().dtype(dtype));
+    auto block = torch::make_intrusive<metatensor_torch::TensorBlockHolder>(
+        values, samples, vector<metatensor_torch::Labels>{}, properties
+    );
+    auto keys = torch::make_intrusive<metatensor_torch::LabelsHolder>(
+        vector<string>{"_"}, torch::zeros({1, 1}, intOptions)
+    );
+    auto tensor = torch::make_intrusive<metatensor_torch::TensorMapHolder>(
+        keys, vector<metatensor_torch::TensorBlock>{block}
+    );
+    tensor->set_info("unit", name == "charge" ? "e" : "");
+    return tensor->to(dtype, device);
+}
+
 void addNeighborList(
     metatomic_torch::System& system,
     const metatomic_torch::NeighborListOptions& request,
+    NeighborList& neighborList,
     const vector<Vec3>& positions,
     const Vec3 box[3],
-    bool periodic,
+    const array<bool, 3>& pbc,
     bool checkConsistency,
     torch::Device device,
     torch::Dtype dtype
 ) {
     const double cutoff = request->engine_cutoff("nm");
     const bool full = request->full_list();
-    auto raw = computeNeighborPairs(positions, box, periodic, cutoff, full);
+    const auto& raw = neighborList.compute(positions, box, pbc, cutoff, full);
     const int64_t nPairs = static_cast<int64_t>(raw.size());
 
+    // from_blob does not own these buffers, and the list reuses them on the next
+    // call, so both tensors have to be cloned before they outlive this scope.
     auto sampleTensor = torch::from_blob(
-        raw.samples.data(), {nPairs, 5}, torch::TensorOptions().dtype(torch::kInt32)
+        const_cast<int32_t*>(raw.samples.data()), {nPairs, 5},
+        torch::TensorOptions().dtype(torch::kInt32)
     ).clone().to(device);
     auto vectorTensor = torch::from_blob(
-        raw.vectors.data(), {nPairs, 3, 1}, torch::TensorOptions().dtype(torch::kFloat64)
+        const_cast<double*>(raw.vectors.data()), {nPairs, 3, 1},
+        torch::TensorOptions().dtype(torch::kFloat64)
     ).clone().to(device, dtype);
 
     const vector<string> sampleNames = {
@@ -394,28 +559,71 @@ public:
         pairListCutoffsNm.reserve(pairLists.size());
         for (const auto& request : pairLists)
             pairListCutoffsNm.push_back(request.cutoff() * lengthToNm);
+        neighbors.reserve(pairLists.size());
+        for (size_t i = 0; i < pairLists.size(); i++)
+            neighbors.push_back(make_unique<NeighborList>());
         for (const auto& input : model->requested_inputs()) {
-            info_.requestedInputs.push_back(input.name());
-            throw OpenMMException(
-                "MetatomicForce: this model requests extra input '" + input.name() +
-                "', which is not implemented yet."
-            );
+            const string& name = input.name();
+            info_.requestedInputs.push_back(name);
+            if (input.sample_kind() != metatomic::SampleKind::System)
+                throw OpenMMException(
+                    "MetatomicForce: this model requests per-atom input '" + name +
+                    "', which MetatomicForce does not provide"
+                );
+            if (name == "charge")
+                extraInputs.emplace_back(name, config.charge);
+            else if (name == "spin_multiplicity")
+                extraInputs.emplace_back(name, config.spinMultiplicity);
+            else
+                throw OpenMMException(
+                    "MetatomicForce: this model requests extra input '" + name +
+                    "', which MetatomicForce does not provide (only charge and "
+                    "spin_multiplicity are supported)"
+                );
         }
 
-        bool hasEnergy = false;
-        for (const auto& output : caps.outputs()) {
-            if (output.name() == "energy") {
-                hasEnergy = true;
-                info_.energyKey = output.name();
-            }
-        }
-        if (!hasEnergy) {
+        vector<string> available;
+        for (const auto& output : caps.outputs())
+            available.push_back(output.name());
+        auto variantFor = [&](const string& base) {
+            const auto found = config.variants.find(base);
+            return found == config.variants.end() ? string() : found->second;
+        };
+        info_.energyKey = pickOutputName(available, "energy", variantFor("energy"));
+        if (info_.energyKey.empty()) {
             throw OpenMMException(
                 "MetatomicForce: model '" + config.modelPath + "' does not provide an energy output"
             );
         }
+        if (config.nonConservativeForces) {
+            info_.nonConservativeForceKey = pickOutputName(
+                available, "non_conservative_force", variantFor("non_conservative_force")
+            );
+            if (info_.nonConservativeForceKey.empty())
+                throw OpenMMException(
+                    "MetatomicForce: nonConservative=\"forces\" needs a "
+                    "non_conservative_force output, which model '" + config.modelPath +
+                    "' does not provide"
+                );
+        }
+        if (config.nonConservativeStress) {
+            // execute_model would happily return one, but nothing downstream can
+            // use it, and unlike the torch path there is no warning worth
+            // printing for a knob that does nothing here.
+            throw OpenMMException(
+                "MetatomicForce: a non-conservative stress is not supported on the "
+                "core backend; use backend=\"torch\" (and note OpenMM cannot "
+                "consume a stress either way)"
+            );
+        }
+        if (config.uncertaintyThreshold >= 0.0) {
+            info_.uncertaintyKey = pickOutputName(
+                available, "energy_uncertainty", variantFor("energy_uncertainty")
+            );
+        }
+        uncertaintyThreshold = config.uncertaintyThreshold;
         checkConsistency = config.checkConsistency;
-        periodic = config.periodic;
+        pbc = config.pbc;
     }
 
     const MetatomicEvaluator::ModelInfo& info() const override {
@@ -437,28 +645,87 @@ public:
         static_assert(sizeof(Vec3) == 3 * sizeof(double), "Vec3 layout changed");
         const double* flatPositions = reinterpret_cast<const double*>(positions.data());
         vector<double> pos(flatPositions, flatPositions + 3 * n);
-        vector<double> cell(9, 0.0);
-        if (periodic) {
-            for (int i = 0; i < 3; i++) {
-                cell[3 * i + 0] = box[i][0];
-                cell[3 * i + 1] = box[i][1];
-                cell[3 * i + 2] = box[i][2];
-            }
-        }
+        auto cell = cellRows(box, pbc);
         try {
-            auto system = makeSystem("nm", typesHost, pos, periodic, cell);
+            auto system = makeSystem("nm", typesHost, pos, pbc, cell);
             for (size_t i = 0; i < pairLists.size(); i++)
-                addPairsCore(system, pairLists[i], positions, box, periodic, pairListCutoffsNm[i], checkConsistency);
+                addPairsCore(
+                    system, pairLists[i], *neighbors[i], positions, box, pbc,
+                    pairListCutoffsNm[i], checkConsistency
+                );
+            for (const auto& input : extraInputs)
+                system.add_custom_data(input.first, systemScalar(input.first, input.second));
             vector<metatomic::System> systems;
             systems.push_back(std::move(system));
-            auto evaluated = evaluateCore(*model, systems, checkConsistency);
+
+            const bool autograd = info_.nonConservativeForceKey.empty();
+            vector<metatomic::Quantity> requests;
+            auto energy = metatomic::Quantity::builder()
+                .name(info_.energyKey)
+                .unit("kJ/mol")
+                .sample_kind(metatomic::SampleKind::System);
+            if (autograd)
+                energy.add_gradient(metatomic::Gradients::Positions);
+            requests.push_back(energy.build());
+            if (!autograd)
+                requests.push_back(
+                    metatomic::Quantity::builder()
+                        .name(info_.nonConservativeForceKey)
+                        .unit("kJ/mol/nm")
+                        .sample_kind(metatomic::SampleKind::Atom)
+                        .build()
+                );
+            if (!info_.uncertaintyKey.empty())
+                requests.push_back(
+                    metatomic::Quantity::builder()
+                        .name(info_.uncertaintyKey)
+                        .unit("eV")
+                        .sample_kind(metatomic::SampleKind::Atom)
+                        .build()
+                );
+
+            auto results = metatomic::execute_model(
+                *model, systems, std::nullopt, requests, checkConsistency
+            );
+            if (results.size() != requests.size())
+                throw OpenMMException("MetatomicForce: model returned the wrong number of outputs");
+
             MetatomicEvaluator::Result result;
-            result.energy = evaluated.energy;
+            auto energyBlock = results[0].block_by_id(0);
+            auto energyValues = energyBlock.values<double>();
+            result.energy = energyValues(0, 0);
             result.forces.resize(n);
-            // Same layout argument as above, in reverse: memcpy the flat
-            // forces straight into the Vec3 buffer instead of constructing
-            // each Vec3 component by component.
-            std::memcpy(result.forces.data(), evaluated.forces.data(), 3 * n * sizeof(double));
+            if (autograd) {
+                auto positionGradient = energyBlock.gradient("positions");
+                auto gradient = positionGradient.values<double>();
+                for (size_t i = 0; i < n; i++)
+                    result.forces[i] = Vec3(
+                        -gradient(i, 0, 0), -gradient(i, 1, 0), -gradient(i, 2, 0)
+                    );
+            }
+            else {
+                auto forceBlock = results[1].block_by_id(0);
+                auto values = forceBlock.values<double>();
+                Vec3 mean;
+                for (size_t i = 0; i < n; i++) {
+                    result.forces[i] = Vec3(values(i, 0, 0), values(i, 1, 0), values(i, 2, 0));
+                    mean += result.forces[i];
+                }
+                // A direct force head can predict a non-zero total force; the
+                // metatomic docs ask engines to remove it to avoid drift.
+                mean *= 1.0 / static_cast<double>(n);
+                for (size_t i = 0; i < n; i++)
+                    result.forces[i] -= mean;
+            }
+            if (!info_.uncertaintyKey.empty()) {
+                auto uncertaintyBlock = results.back().block_by_id(0);
+                auto values = uncertaintyBlock.values<double>();
+                vector<double> uncertainty(n);
+                for (size_t i = 0; i < n; i++)
+                    uncertainty[i] = values(i, 0);
+                result.maxUncertainty = *max_element(uncertainty.begin(), uncertainty.end());
+                warnUncertainty(uncertainty, uncertaintyThreshold);
+            }
             return result;
         }
         catch (const exception& e) {
@@ -470,8 +737,12 @@ public:
     vector<int32_t> typesHost;
     vector<metatomic::PairListOptions> pairLists;
     vector<double> pairListCutoffsNm;
+    /// One per request, kept between compute() calls for the skin cache.
+    mutable vector<unique_ptr<NeighborList>> neighbors;
+    vector<pair<string, double>> extraInputs;
     bool checkConsistency = false;
-    bool periodic = false;
+    array<bool, 3> pbc = {false, false, false};
+    double uncertaintyThreshold = -1.0;
     MetatomicEvaluator::ModelInfo info_;
 };
 
@@ -523,20 +794,45 @@ public:
             );
         }
         info_.neighborListRequests = static_cast<int>(neighborRequests.size());
+        neighbors.reserve(neighborRequests.size());
+        for (size_t i = 0; i < neighborRequests.size(); i++)
+            neighbors.push_back(make_unique<NeighborList>());
 
         auto requestedInputs = model.run_method("requested_inputs", /*use_new_names=*/true).toGenericDict();
         for (const auto& entry : requestedInputs) {
             const string name(entry.key().toStringRef());
             info_.requestedInputs.push_back(name);
-            throw OpenMMException(
-                "MetatomicForce: this model requests extra input '" + name +
-                "', which is not implemented yet. Full-system energy and conservative "
-                "forces are the current milestone."
-            );
+            auto option = entry.value().toCustomClass<metatomic_torch::ModelOutputHolder>();
+            if (option->sample_kind() != "system")
+                throw OpenMMException(
+                    "MetatomicForce: this model requests per-atom input '" + name +
+                    "', which MetatomicForce does not provide"
+                );
+            if (name == "charge")
+                extraInputs.emplace_back(name, systemScalarTorch(name, config.charge, dtype, device));
+            else if (name == "spin_multiplicity")
+                extraInputs.emplace_back(
+                    name, systemScalarTorch(name, config.spinMultiplicity, dtype, device)
+                );
+            else
+                throw OpenMMException(
+                    "MetatomicForce: this model requests extra input '" + name +
+                    "', which MetatomicForce does not provide (only charge and "
+                    "spin_multiplicity are supported)"
+                );
         }
 
         auto outputs = capabilities->outputs();
-        info_.energyKey = metatomic_torch::pick_output("energy", outputs, torch::nullopt);
+        auto variantFor = [&](const string& base) -> torch::optional<string> {
+            const auto found = config.variants.find(base);
+            if (found == config.variants.end())
+                return torch::nullopt;
+            return found->second;
+        };
+        options = torch::make_intrusive<metatomic_torch::ModelEvaluationOptionsHolder>();
+        options->set_length_unit("nm");
+
+        info_.energyKey = metatomic_torch::pick_output("energy", outputs, variantFor("energy"));
         if (!outputs.contains(info_.energyKey)) {
             throw OpenMMException(
                 "MetatomicForce: model '" + config.modelPath +
@@ -546,13 +842,73 @@ public:
         auto energyOut = torch::make_intrusive<metatomic_torch::ModelOutputHolder>();
         energyOut->set_sample_kind(outputs.at(info_.energyKey)->sample_kind());
         energyOut->set_unit("kJ/mol");
-        options = torch::make_intrusive<metatomic_torch::ModelEvaluationOptionsHolder>();
-        options->set_length_unit("nm");
         options->outputs.insert(info_.energyKey, energyOut);
 
+        if (config.nonConservativeForces) {
+            bool hasForce = false;
+            for (const auto& entry : outputs)
+                hasForce = hasForce || entry.key().find("non_conservative_force") != string::npos;
+            if (!hasForce)
+                throw OpenMMException(
+                    "MetatomicForce: nonConservative=\"forces\" needs a "
+                    "non_conservative_force output, which model '" + config.modelPath +
+                    "' does not provide"
+                );
+            info_.nonConservativeForceKey = metatomic_torch::pick_output(
+                "non_conservative_force", outputs, variantFor("non_conservative_force")
+            );
+            auto forceOut = torch::make_intrusive<metatomic_torch::ModelOutputHolder>();
+            forceOut->set_sample_kind("atom");
+            forceOut->set_unit("kJ/mol/nm");
+            options->outputs.insert(info_.nonConservativeForceKey, forceOut);
+        }
+        if (config.nonConservativeStress) {
+            // Requested for completeness and to surface a missing output early;
+            // OpenMM has no virial path, so nothing consumes the stress. NPT goes
+            // through a MonteCarlo barostat, which only needs the energy.
+            bool hasStress = false;
+            for (const auto& entry : outputs)
+                hasStress = hasStress || entry.key().find("non_conservative_stress") != string::npos;
+            if (!hasStress)
+                throw OpenMMException(
+                    "MetatomicForce: nonConservative asked for a stress, which model '" +
+                    config.modelPath + "' does not provide"
+                );
+            info_.nonConservativeStressKey = metatomic_torch::pick_output(
+                "non_conservative_stress", outputs, variantFor("non_conservative_stress")
+            );
+            fprintf(
+                stderr,
+                "MetatomicForce warning: OpenMM cannot use a non-conservative stress; "
+                "use a MonteCarloBarostat for NPT\n"
+            );
+            auto stressOut = torch::make_intrusive<metatomic_torch::ModelOutputHolder>();
+            stressOut->set_sample_kind("system");
+            stressOut->set_unit("kJ/mol/nm^3");
+            options->outputs.insert(info_.nonConservativeStressKey, stressOut);
+        }
+        // A model without an uncertainty head simply does not get checked, the
+        // same choice OpenMM-ML makes.
+        bool hasUncertainty = false;
+        for (const auto& entry : outputs)
+            hasUncertainty = hasUncertainty || entry.key().find("energy_uncertainty") != string::npos;
+        if (config.uncertaintyThreshold >= 0.0 && hasUncertainty) {
+            info_.uncertaintyKey = metatomic_torch::pick_output(
+                "energy_uncertainty", outputs, variantFor("energy_uncertainty")
+            );
+            auto uncertaintyOut = torch::make_intrusive<metatomic_torch::ModelOutputHolder>();
+            uncertaintyOut->set_sample_kind("atom");
+            uncertaintyOut->set_unit("eV");
+            options->outputs.insert(info_.uncertaintyKey, uncertaintyOut);
+        }
+        uncertaintyThreshold = config.uncertaintyThreshold;
+
         checkConsistency = config.checkConsistency;
-        periodic = config.periodic;
-        pbc = torch::tensor({periodic, periodic, periodic}, torch::TensorOptions().dtype(torch::kBool)).to(device);
+        this->pbcFlags = config.pbc;
+        pbc = torch::tensor(
+            {config.pbc[0], config.pbc[1], config.pbc[2]},
+            torch::TensorOptions().dtype(torch::kBool)
+        ).to(device);
     }
 
     const MetatomicEvaluator::ModelInfo& info() const override {
@@ -567,28 +923,28 @@ public:
             );
         }
         const int64_t n = static_cast<int64_t>(positions.size());
+        const bool autograd = info_.nonConservativeForceKey.empty();
         auto posOptions = torch::TensorOptions().dtype(torch::kFloat64);
         auto posCpu = torch::from_blob(
             const_cast<Vec3*>(positions.data()), {n, 3}, posOptions
         ).clone();
-        auto pos = posCpu.to(device, dtype).set_requires_grad(true);
+        auto pos = posCpu.to(device, dtype);
+        if (autograd)
+            pos.set_requires_grad(true);
 
-        torch::Tensor cell;
-        if (periodic) {
-            double values[9] = {
-                box[0][0], box[0][1], box[0][2],
-                box[1][0], box[1][1], box[1][2],
-                box[2][0], box[2][1], box[2][2]
-            };
-            cell = torch::from_blob(values, {3, 3}, posOptions).clone().to(device, dtype);
-        }
-        else {
-            cell = torch::zeros({3, 3}, torch::TensorOptions().dtype(dtype).device(device));
-        }
+        const auto cellHost = cellRows(box, pbcFlags);
+        auto cell = torch::from_blob(
+            const_cast<double*>(cellHost.data()), {3, 3}, posOptions
+        ).clone().to(device, dtype);
 
         auto system = torch::make_intrusive<metatomic_torch::SystemHolder>(types, pos, cell, pbc);
-        for (const auto& request : neighborRequests)
-            addNeighborList(system, request, positions, box, periodic, checkConsistency, device, dtype);
+        for (size_t i = 0; i < neighborRequests.size(); i++)
+            addNeighborList(
+                system, neighborRequests[i], *neighbors[i], positions, box, pbcFlags,
+                checkConsistency, device, dtype
+            );
+        for (const auto& input : extraInputs)
+            system->add_data(input.first, input.second, /*override=*/false);
 
         c10::IValue output;
         try {
@@ -601,19 +957,44 @@ public:
         auto energyMap = dict.at(info_.energyKey).toCustomClass<metatensor_torch::TensorMapHolder>();
         auto energyBlock = metatensor_torch::TensorMapHolder::block_by_id(energyMap, 0);
         auto energyTensor = energyBlock->values().sum();
-        energyTensor.backward();
-        auto grad = system->positions().grad();
-        if (!grad.defined()) {
-            throw OpenMMException(
-                "MetatomicForce: model energy does not depend on positions; cannot compute forces"
-            );
-        }
-        auto forceCpu = (-grad).to(torch::kCPU).to(torch::kFloat64).contiguous();
+
         MetatomicEvaluator::Result result;
         result.energy = energyTensor.item<double>();
         result.forces.resize(static_cast<size_t>(n));
         static_assert(sizeof(Vec3) == 3 * sizeof(double), "Vec3 layout changed");
+
+        torch::Tensor forceCpu;
+        if (autograd) {
+            energyTensor.backward();
+            auto grad = system->positions().grad();
+            if (!grad.defined()) {
+                throw OpenMMException(
+                    "MetatomicForce: model energy does not depend on positions; cannot compute forces"
+                );
+            }
+            forceCpu = (-grad).to(torch::kCPU).to(torch::kFloat64).contiguous();
+        }
+        else {
+            auto forceMap = dict.at(info_.nonConservativeForceKey)
+                                .toCustomClass<metatensor_torch::TensorMapHolder>();
+            auto forceBlock = metatensor_torch::TensorMapHolder::block_by_id(forceMap, 0);
+            auto forces = forceBlock->values().reshape({n, 3});
+            // A direct force head can predict a non-zero total force; the
+            // metatomic docs ask engines to remove it to avoid drift.
+            forces = forces - forces.mean(0, /*keepdim=*/true);
+            forceCpu = forces.detach().to(torch::kCPU).to(torch::kFloat64).contiguous();
+        }
         std::memcpy(result.forces.data(), forceCpu.data_ptr<double>(), 3 * static_cast<size_t>(n) * sizeof(double));
+
+        if (!info_.uncertaintyKey.empty()) {
+            auto map = dict.at(info_.uncertaintyKey).toCustomClass<metatensor_torch::TensorMapHolder>();
+            auto block = metatensor_torch::TensorMapHolder::block_by_id(map, 0);
+            auto values = block->values().detach().reshape({n}).to(torch::kCPU).to(torch::kFloat64).contiguous();
+            const double* data = values.data_ptr<double>();
+            vector<double> uncertainty(data, data + n);
+            result.maxUncertainty = *max_element(uncertainty.begin(), uncertainty.end());
+            warnUncertainty(uncertainty, uncertaintyThreshold);
+        }
         return result;
     }
 
@@ -621,13 +1002,17 @@ public:
     metatomic_torch::ModelCapabilities capabilities;
     metatomic_torch::ModelEvaluationOptions options;
     vector<metatomic_torch::NeighborListOptions> neighborRequests;
+    /// One per request, kept between compute() calls for the skin cache.
+    mutable vector<unique_ptr<NeighborList>> neighbors;
     torch::Tensor types;
     vector<int> typesHost;
     torch::Tensor pbc;
+    array<bool, 3> pbcFlags = {false, false, false};
+    vector<pair<string, metatensor_torch::TensorMap>> extraInputs;
     torch::Device device = torch::kCPU;
     torch::Dtype dtype = torch::kFloat32;
     bool checkConsistency = false;
-    bool periodic = false;
+    double uncertaintyThreshold = -1.0;
     MetatomicEvaluator::ModelInfo info_;
 };
 #endif

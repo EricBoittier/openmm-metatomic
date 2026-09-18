@@ -236,6 +236,52 @@ def make_potential(
     )
 
 
+def ensure_native_backend():
+    """Register ``MLPotential("metatomic-native")`` from the build tree."""
+    import sys
+
+    built = repo_root() / "build" / "python"
+    if built.is_dir() and str(built) not in sys.path:
+        sys.path.insert(0, str(built))
+    plugin = repo_root() / "build"
+    if (plugin / "libOpenMMMetatomic.so").is_file():
+        os.environ.setdefault("OPENMM_PLUGIN_DIR", str(plugin))
+    import openmmmetatomic
+
+    return openmmmetatomic.register()
+
+
+def make_native_potential(
+    model_path: str,
+    device: str = "cpu",
+    check_consistency: bool = False,
+    **kwargs,
+):
+    from openmmml import MLPotential
+
+    ensure_openmm_ml_embeddings()
+    name = ensure_native_backend()
+    return MLPotential(
+        name,
+        modelPath=model_path,
+        device=device,
+        checkConsistency=check_consistency,
+        **kwargs,
+    )
+
+
+def mixed_system(potential, topology, system, atoms, **kwargs):
+    """``createMixedSystem`` for either backend.
+
+    The native backend reports ``getMLLongRange() is False``, and mechanical
+    embedding then rejects an explicit ``mlLongRange``; the PythonForce backend
+    reports ``None`` and has to be told. Both end up with a short-ranged ML part.
+    """
+    if potential._impl.getMLLongRange() is None:
+        kwargs.setdefault("mlLongRange", False)
+    return potential.createMixedSystem(topology, system, atoms, **kwargs)
+
+
 def save_figure(fig, script_path, suffix: str = ""):
     out = Path(script_path).resolve().parent / "plots"
     out.mkdir(exist_ok=True)

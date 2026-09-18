@@ -36,3 +36,8 @@ The gallery covers these layers, in ``plot_NN_*.py`` order:
    forces, uncertainty), Langevin NVT and MonteCarlo NPT, then mixed
    toluene-in-water with mechanical embedding, ``lambda_interpolate``, and
    link atoms on ACE-ALA-NME. See also ``docs/src/openmm_ml.rst``.
+8. **Native vs PythonForce** (``plot_16``) — the same PET-MAD-XS Systems built
+   through ``MLPotential("metatomic")`` and ``MLPotential("metatomic-native")``,
+   compared on energy, forces, ``getState`` cost and ms/step: toluene in
+   vacuum, toluene in explicit water through ``createMixedSystem`` (so the
+   native force uses its particle subset), and the direct force head.

@@ -20,6 +20,7 @@ int main(int argc, char** argv) {
         std::string platform;
         std::string systemName = "water";
         std::string pdb;
+        std::string pluginsDir;
         int nMol = 8;
         int nAtoms = 0;
         int nveSteps = 200;
@@ -58,11 +59,13 @@ int main(int argc, char** argv) {
             else if (arg == "--friction") { friction = std::stod(need(i)); i++; }
             else if (arg == "--check-consistency") { checkConsistency = true; }
             else if (arg == "--periodic") { periodic = true; }
+            else if (arg == "--plugins-dir") { pluginsDir = need(i); i++; }
             else if (arg == "--help" || arg == "-h") {
                 std::cout <<
                     "openmm-metatomic-run-md --model harmonic|harmonic-nl|<file.pt>\n"
                     "  --system water|water-box|cloud|pdb   --pdb file.pdb   --n-mol 8   --n-atoms 3000\n"
-                    "  --backend auto|core|torch  --device cpu|cuda  --platform CPU|Reference\n"
+                    "  --backend auto|core|torch  --device cpu|cuda\n"
+                    "  --platform Reference|CPU|CUDA  --plugins-dir <OpenMM lib/plugins>\n"
                     "  --nve 200 --nvt 100 --dt 0.0005 --eval 11 --warmup-eval 8 --warmup-step 10\n"
                     "  [--check-consistency] [--periodic]\n";
                 return 0;
@@ -71,6 +74,8 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("unknown argument " + arg);
             }
         }
+
+        loadPlatformPlugins(pluginsDir);
 
         Geometry geom;
         if (!pdb.empty() || systemName == "pdb") {
@@ -110,6 +115,7 @@ int main(int argc, char** argv) {
                   << " platform=" << (platform.empty() ? "auto" : platform)
                   << " N=" << geom.types.size()
                   << " periodic=" << (config.periodic ? "true" : "false")
+                  << " available=" << availablePlatforms()
                   << "\n";
 
         const auto result = runMd(

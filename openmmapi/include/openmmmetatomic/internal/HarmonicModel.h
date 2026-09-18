@@ -1,6 +1,7 @@
 #ifndef OPENMM_METATOMIC_HARMONIC_MODEL_H_
 #define OPENMM_METATOMIC_HARMONIC_MODEL_H_
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
@@ -321,10 +322,14 @@ inline metatomic::DLPackTensor dlpackTypes(const std::vector<int32_t>& types) {
     return metatomic::DLPackTensor(mts.as_dlpack(cpu, nullptr, version));
 }
 
-inline metatomic::DLPackTensor dlpackPbc(bool periodic) {
-    const uint8_t flag = periodic ? 1 : 0;
+inline metatomic::DLPackTensor dlpackPbc(const std::array<bool, 3>& pbc) {
     auto array = std::make_unique<metatensor::SimpleDataArray<uint8_t>>(
-        std::vector<uintptr_t>{3}, std::vector<uint8_t>{flag, flag, flag}
+        std::vector<uintptr_t>{3},
+        std::vector<uint8_t>{
+            static_cast<uint8_t>(pbc[0] ? 1 : 0),
+            static_cast<uint8_t>(pbc[1] ? 1 : 0),
+            static_cast<uint8_t>(pbc[2] ? 1 : 0),
+        }
     );
     auto mts = metatensor::DataArrayBase::to_mts_array(std::move(array));
     DLDevice cpu = {kDLCPU, 0};
@@ -337,14 +342,25 @@ inline metatomic::DLPackTensor dlpackPbc(bool periodic) {
 inline metatomic::System makeSystem(const std::string& lengthUnit,
                                     const std::vector<int32_t>& types,
                                     const std::vector<double>& positions,
-                                    bool periodic,
+                                    const std::array<bool, 3>& pbc,
                                     const std::vector<double>& cell) {
     return metatomic::System(
         lengthUnit,
         dlpackTypes(types),
         dlpackFrom({types.size(), 3}, positions),
         dlpackFrom({3, 3}, cell),
-        dlpackPbc(periodic)
+        dlpackPbc(pbc)
+    );
+}
+
+inline metatomic::System makeSystem(const std::string& lengthUnit,
+                                    const std::vector<int32_t>& types,
+                                    const std::vector<double>& positions,
+                                    bool periodic,
+                                    const std::vector<double>& cell) {
+    return makeSystem(
+        lengthUnit, types, positions,
+        std::array<bool, 3>{periodic, periodic, periodic}, cell
     );
 }
 

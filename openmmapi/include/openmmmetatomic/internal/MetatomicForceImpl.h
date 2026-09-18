@@ -5,6 +5,7 @@
 #include "openmmmetatomic/internal/MetatomicEvaluator.h"
 #include "openmm/internal/CustomCPPForceImpl.h"
 #include <memory>
+#include <vector>
 
 namespace OpenMMMetatomic {
 
@@ -23,6 +24,8 @@ public:
 private:
     const MetatomicForce& owner;
     std::unique_ptr<MetatomicEvaluator> evaluator;
+    std::vector<int> particles;
+    mutable std::vector<OpenMM::Vec3> subset;
 };
 
 } // namespace OpenMMMetatomic

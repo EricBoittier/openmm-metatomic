@@ -35,4 +35,10 @@ setup(
     packages=find_packages(),
     ext_modules=[extension],
     install_requires=["openmm"],
+    entry_points={
+        "openmmml.potentials": [
+            "metatomic-native = "
+            "openmmmetatomic.openmmml:MetatomicNativePotentialImplFactory",
+        ],
+    },
 )

@@ -58,6 +58,7 @@ _load_openmmmetatomic_plugin()
 
 namespace std {
     %template(ivector) vector<int>;
+    %template(svector) vector<string>;
 }
 
 namespace OpenMMMetatomic {
@@ -71,6 +72,13 @@ public:
     void setAtomicTypes(const std::vector<int>& types);
     void setUsesPeriodicBoundaryConditions(bool periodic);
     void setBackend(const std::string& backend);
+    void setParticles(const std::vector<int>& particles);
+    void setPeriodicDirections(bool a, bool b, bool c);
+    void setNonConservative(const std::string& mode);
+    void setVariant(const std::string& output, const std::string& variant);
+    void setUncertaintyThreshold(double eVPerAtom);
+    void setCharge(double charge);
+    void setSpinMultiplicity(double multiplicity);
 
     const std::string& getModelPath() const;
     const std::string& getDevice() const;
@@ -79,7 +87,21 @@ public:
     const std::vector<int>& getAtomicTypes() const;
     bool usesPeriodicBoundaryConditions() const;
     const std::string& getBackend() const;
+    const std::vector<int>& getParticles() const;
+    bool getPeriodicDirection(int axis) const;
+    const std::string& getNonConservative() const;
+    std::string getVariant(const std::string& output) const;
+    std::vector<std::string> getVariantOutputs() const;
+    double getUncertaintyThreshold() const;
+    double getCharge() const;
+    double getSpinMultiplicity() const;
 
+    // cast() hands back a reference it does not own, so a caller writing
+    // cast(XmlSerializer.deserialize(xml)) would be left with a dangling
+    // pointer once the temporary is collected.
+    %pythonappend cast %{
+        val._cast_source = force
+    %}
     %extend {
         static OpenMMMetatomic::MetatomicForce& cast(OpenMM::Force& force) {
             return dynamic_cast<OpenMMMetatomic::MetatomicForce&>(force);

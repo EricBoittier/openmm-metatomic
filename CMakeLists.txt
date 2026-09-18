@@ -402,6 +402,11 @@ if(OPENMM_DIR)
             ${CMAKE_CURRENT_SOURCE_DIR}/openmmapi/include
             ${OPENMM_DIR}/include
         )
+        # This OpenMM's compiled-in default plugin directory is wherever it was
+        # configured to install, so the drivers would only see Reference.
+        target_compile_definitions(${name} PRIVATE
+            OPENMM_METATOMIC_PLUGINS_DIR="${OPENMM_DIR}/lib/plugins"
+        )
         target_link_libraries(${name} PRIVATE
             OpenMMMetatomic metatomic::shared "${OPENMM_DIR}/lib/libOpenMM.so"
         )
@@ -421,6 +426,28 @@ if(OPENMM_DIR)
 
     openmm_metatomic_plugin_exe(openmm-metatomic-run-md spike/run_md.cpp)
     openmm_metatomic_plugin_exe(openmm-metatomic-bench-settings spike/bench_settings.cpp)
+    openmm_metatomic_plugin_exe(openmm-metatomic-test-features spike/test_features.cpp)
+    openmm_metatomic_plugin_exe(openmm-metatomic-test-cuda spike/test_cuda.cpp)
+    openmm_metatomic_plugin_exe(openmm-metatomic-bench-cuda spike/bench_cuda.cpp)
+
+    if(OPENMM_METATOMIC_TORCH AND Python3_EXECUTABLE)
+        set(FEATURES_PT "${CMAKE_CURRENT_BINARY_DIR}/features.pt")
+        add_custom_command(
+            OUTPUT ${FEATURES_PT}
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/spike/export_features_torch.py ${FEATURES_PT}
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/spike/export_features_torch.py
+            COMMENT "Export TorchScript parity-features model"
+        )
+        add_custom_target(features-pt ALL DEPENDS ${FEATURES_PT})
+        add_test(NAME test-features COMMAND openmm-metatomic-test-features ${FEATURES_PT})
+        # Both pass trivially (and say so) when there is no CUDA device.
+        add_test(NAME test-cuda COMMAND openmm-metatomic-test-cuda ${FEATURES_PT})
+        add_test(
+            NAME bench-cuda-smoke
+            COMMAND openmm-metatomic-bench-cuda --model ${FEATURES_PT}
+                --n-mol 8 --warmup 1 --repeats 2 --md 2
+        )
+    endif()
 
     add_test(
         NAME run-md-smoke
@@ -431,7 +458,7 @@ if(OPENMM_DIR)
         COMMAND openmm-metatomic-bench-settings
             --models harmonic --backends core --platforms Reference
             --nl none --nve 2 --nvt 2 --eval 2 --warmup-eval 1 --warmup-step 1
-            --harmonic-atoms 3
+            --harmonic-atoms 3 --subsets 0,2
     )
 
     add_subdirectory(python)

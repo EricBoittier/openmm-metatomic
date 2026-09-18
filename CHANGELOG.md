@@ -7,6 +7,156 @@ All notable changes to openmm-metatomic are documented here, following
 
 ### Added
 
+- **`MetatomicForce` now matches `MLPotential("metatomic")` feature for
+  feature, and is available as an OpenMM-ML backend.**
+  `MLPotential("metatomic-native")` (module `openmmmetatomic.openmmml`,
+  registered through an `openmmml.potentials` entry point or
+  `openmmmetatomic.register()` for a `PYTHONPATH` checkout) accepts the same
+  keyword arguments as the PythonForce backend and adds `backend` to pick the
+  evaluator. Because mechanical embedding only ever calls
+  `potential.addForces(...)`, mixed ML/MM systems, `lambda_interpolate` and
+  link atoms are inherited rather than reimplemented. The new knobs on the
+  force itself:
+  - `setParticles()` / `getParticles()`: the model sees a subset of the
+    System, in the given order. `MetatomicForceImpl::computeForce` gathers
+    those positions, evaluates, and scatters the forces back with zeros
+    elsewhere, so a conventional force field can cover the rest.
+    `setAtomicTypes()` then takes one entry per listed particle.
+  - `setPeriodicDirections(a, b, c)` / `getPeriodicDirection(axis)`: per-axis
+    PBC. A non-periodic direction gets a zero cell row, matching the
+    reference implementation's `cell = cell * pbc.unsqueeze(1)`.
+    `setUsesPeriodicBoundaryConditions()` still sets all three.
+  - `setNonConservative("forces"|"stress"|"both")`: take forces from the
+    model's `non_conservative_force` head, skipping `backward()` and removing
+    the net force as the metatomic docs require. A stress is requested and
+    validated but unused: OpenMM has no virial path (Eastman on
+    metatensor/metatomic#333), so the force warns on stderr and NPT stays on
+    a `MonteCarloBarostat`, which only needs the energy.
+  - `setVariant(output, variant)`: resolve `energy`, `energy_uncertainty`,
+    `non_conservative_force` and `non_conservative_stress` through
+    `pick_output` (torch) or exact `name/variant` matching (core).
+  - `setUncertaintyThreshold(eV)`: request `energy_uncertainty` when the
+    model has that head and warn on stderr with the offending atom indices.
+    `MetatomicEvaluator::Result::maxUncertainty` exposes the largest value so
+    tests can assert the check fired.
+  - `setCharge()` / `setSpinMultiplicity()`: both backends used to hard-throw
+    on any requested input. They now supply per-system `charge` and
+    `spin_multiplicity` (torch `System::add_data`, core
+    `System::add_custom_data`), and keep a clear error for anything else,
+    including per-atom requests.
+  - Serialization goes to version 2 with the new fields and still reads
+    version 1; the SWIG surface grew the matching setters and getters.
+  - Core-backend caveats: variant selection is exact name matching, so a
+    model that only distinguishes variants by description is not resolved
+    the way `metatomic_torch::pick_output` would, and the deprecated
+    `non_conservative_forces` output name is not remapped. Both are handled
+    on the torch path by metatomic itself. `non_conservative="stress"` or
+    `"both"` is refused outright on the core backend rather than computed and
+    dropped.
+- Verification: `spike/test_features.cpp` (`test-features` in `ctest`, model
+  from `spike/export_features_torch.py`) checks subset energies and forces
+  against a standalone run on the same atoms, zero force outside the subset,
+  the non-conservative field after mean removal, the charge/spin energy
+  shift, per-axis PBC pair counts, and the uncertainty maximum.
+  `tests/python/test_openmmml_native.py` (`python-openmmml-native`) mirrors
+  `openmm-ml/test/TestMetatomicPotential.py`: pure and mixed systems built
+  through both backends must agree on energy and forces, and
+  `lambda_interpolate` must still collapse to the MM energy at 0.
+  `tests/python/test_serialization.py` (`python-serialization`) round-trips
+  every new field, reads a version-1 document, and refuses an unknown version.
+- Head-to-head on PET-MAD-XS, `examples/plot_16_native_vs_pythonforce.py`:
+  identical Systems, one hot Context per backend, warmup evals and steps, then
+  round-robin blocks of `getState` calls and of `step(N)` so that a machine
+  that gets busier mid-run penalises both backends equally. torch is pinned to
+  4 intra-op threads (`OPENMM_METATOMIC_BENCH_THREADS`); at the default 24 a
+  15-atom evaluation spends most of its time spin-waiting, which made the
+  median five times slower than the minimum and moved it by 5x between
+  launches. Medians of three launches on this box (Reference platform, CPU,
+  float32 model), now reproducible to ~3%: toluene in vacuum with autograd
+  forces 12.6 ms PythonForce vs 11.1 ms native (1.13x); the same system with
+  `non_conservative="forces"` 6.6 ms vs 5.4 ms (1.23x); toluene in explicit
+  water through `createMixedSystem` (15 ML atoms of 6,495) 415 ms vs 415 ms
+  (1.00x — the model forward dominates, so the evaluation path does not show).
+  The two backends agree to -9.8e-4 kJ/mol on both systems, with max |ΔF|
+  1e-2 kJ/mol/nm in vacuum and 1e-1 kJ/mol/nm in water (RMS 3e-3), as expected
+  from a float32 model and two different neighbor-list builds.
+- `spike/bench_settings.cpp` gained `--forces auto,forces,stress,both` and
+  `--subsets 0,15,...` axes (0 meaning every particle), reported in the case
+  label.
+- **M3: CUDA execution, measured.** `sim::loadPlatformPlugins()` (in
+  `spike/SimHelpers.h`) registers OpenMM's platform plugins from
+  `${OPENMM_DIR}/lib/plugins`, overridable with `OPENMM_METATOMIC_PLUGINS_DIR`
+  or `--plugins-dir`. Until now every C++ driver only ever saw `Reference`,
+  because libOpenMM's compiled-in default directory points at wherever that
+  build was configured to install; `run_md` gained `--plugins-dir` and prints
+  the platforms it found. Nothing in the plugin itself needed changing for
+  CUDA: `setDevice("cuda")` already moved the model, and
+  `CustomCPPForceImpl` hands over host buffers whatever platform is driving.
+  - `spike/test_cuda.cpp` (`test-cuda`) checks that `cuda` and `cpu` give the
+    same energy and forces from the evaluator (autograd and non-conservative),
+    and that a CUDA-resident model gives the same answer through Reference,
+    CPU and CUDA Contexts — including the subset path, where the CUDA
+    platform's force buffer is the one that could keep a stale value outside
+    the subset. Agreement is ~1e-8; the test skips with a message when there
+    is no device. `spike/export_features_torch.py` now advertises
+    `supported_devices=["cuda", "cpu"]` (its `forward` already followed the
+    positions' device).
+  - `spike/bench_cuda.cpp` (`openmm-metatomic-bench-cuda`, `bench-cuda-smoke`)
+    measures three layers per case: `MetatomicEvaluator::compute`, a full
+    `Context` on each platform (median `getState` and, separately, ms/step
+    with no per-step query), and a bare N×3 host→device→host round trip.
+  - PET-MAD-XS on an RTX 4060 Ti, medians of three launches: 32 waters (96
+    atoms) 34.0 ms on CPU vs 12.0 ms on CUDA (2.8x); 96 waters (288 atoms)
+    123.6 ms vs 14.3 ms (8.6x); 1,000 waters (3,000 atoms) 128.7 ms on CUDA.
+    Energies agree to 4e-3 kJ/mol out of 4.8e4 (float32 model, different
+    reduction order).
+  - The host path is not what limits this. Our own two copies — the N×3 round
+    trip — are 23 µs at 96 atoms and 49 µs at 3,000, i.e. 0.2% and 0.04% of
+    the evaluation. Choosing the CUDA platform over Reference for the same
+    CUDA-resident model costs nothing measurable on PET-MAD-XS. It only shows
+    up with a model cheap enough that copies matter: on the `features.pt`
+    toy at 3,000 atoms, ms/step is 3.04 (Reference) vs 3.28 (CUDA), and that
+    model is *faster* on CPU (2.0 ms) than on the GPU (3.2 ms) anyway.
+  - **M4 (zero-copy DLPack) is therefore a no-go for now**, recorded in
+    ROADMAP.md: it would chase ≤1% of a realistic evaluation. Worth revisiting
+    only for a model whose GPU forward is around a millisecond at ≥10k atoms,
+    where the copies would finally be a visible share.
+- **Phase 3: pair lists are cached across steps.** Each of the model's
+  neighbor-list requests now owns a `NeighborList` that lives as long as the
+  evaluator, and vesin is asked for a Verlet skin
+  (`OPENMM_METATOMIC_NEIGHBOR_SKIN`, nm, default 0.05; 0 restores the old
+  behaviour). vesin keeps its candidate topology with `cutoff + skin` and
+  reuses it until an atom moves more than `skin / 2`; the previous code freed
+  the list after every evaluation, which threw that cache away every step.
+  - The default skin is measured. On a 0.75 nm full list (PET-MAD-XS's
+    request) a cached call costs 0.42 ms at 288 atoms and 5.5 ms at 3,000,
+    against 0.71 and 8.2 ms for a fresh build, with rebuilds at 2.1 and 24 ms.
+    A skin of 0.1 nm halves the rebuild frequency but costs more per step and
+    much more per rebuild, so it loses on both counts; 0.15 nm and up are worse
+    still.
+  - vesin's cache tracks the cell as well as the positions — verified against
+    fresh builds after 10% compression and 15% expansion — so a
+    `MonteCarloBarostat` is safe.
+  - What it is worth end to end depends entirely on how expensive the model is.
+    A cheap model where the list is a real share of the work: 400-step NVE on
+    256 waters with the built-in `harmonic-nl`, core backend, 1.38 → 1.04
+    ms/step (24% faster) with an identical trajectory (drift 2.26674e-06 kJ/mol
+    either way); the `features.pt` toy at 3,000 atoms, 2.2 → 1.65 ms/step.
+    PET-MAD-XS is the other extreme: its forward is 12–129 ms, so the same
+    saving is 1–2% and does not clear the noise.
+  - `test_pairlist.cpp` grew `checkSkinCache`, which walks 60 atoms far enough
+    to force several rebuilds over 40 steps and requires cached and fresh runs
+    to agree exactly (they do: worst |ΔE| and |ΔF| are 0 on both backends,
+    periodic and not, since only the summation order could have changed).
+
+### Fixed
+
+- `MetatomicForce.cast()` returns a reference it does not own, so
+  `MetatomicForce.cast(XmlSerializer.deserialize(xml))` read freed memory
+  (garbage `getAtomicTypes()`, often a segfault) once the temporary was
+  collected. The wrapper now keeps the source object alive through the value
+  it hands back.
+
 - SWIG Python wrappers for `MetatomicForce` (`from openmmmetatomic import
   MetatomicForce`), a C++ NVE/NVT driver (`openmm-metatomic-run-md`), and
   a settings-matrix bench (`openmm-metatomic-bench-settings`). Gallery

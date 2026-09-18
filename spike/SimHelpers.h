@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <cmath>
 #include <fstream>
 #include <functional>
@@ -35,6 +36,52 @@ inline double massFor(int atomicNumber) {
 }
 
 constexpr double kR = 8.314462618e-3; // kJ/mol/K
+
+/**
+ * Make the CPU and CUDA platforms available.
+ *
+ * Only Reference is linked into libOpenMM; the rest are runtime plugins, and
+ * this OpenMM's compiled-in default directory points at wherever it was
+ * configured to install, not at where it actually lives. Without this, every
+ * driver here silently sees Reference alone. Precedence: the explicit argument,
+ * then OPENMM_METATOMIC_PLUGINS_DIR, then the build-time OPENMM_DIR, then
+ * OpenMM's own default.
+ */
+inline std::vector<std::string> loadPlatformPlugins(const std::string& dir = "") {
+    std::vector<std::string> candidates;
+    if (!dir.empty())
+        candidates.push_back(dir);
+    else {
+        if (const char* env = std::getenv("OPENMM_METATOMIC_PLUGINS_DIR"))
+            candidates.push_back(env);
+#ifdef OPENMM_METATOMIC_PLUGINS_DIR
+        candidates.push_back(OPENMM_METATOMIC_PLUGINS_DIR);
+#endif
+        candidates.push_back(OpenMM::Platform::getDefaultPluginsDirectory());
+    }
+    for (const auto& candidate : candidates) {
+        if (candidate.empty())
+            continue;
+        try {
+            auto loaded = OpenMM::Platform::loadPluginsFromDirectory(candidate);
+            if (!loaded.empty())
+                return loaded;
+        }
+        catch (const std::exception&) {
+            // A missing or unreadable directory is not fatal: the caller may
+            // only want Reference, and asking for a platform that did not load
+            // fails loudly anyway.
+        }
+    }
+    return {};
+}
+
+inline std::string availablePlatforms() {
+    std::ostringstream names;
+    for (int i = 0; i < OpenMM::Platform::getNumPlatforms(); i++)
+        names << (i ? "," : "") << OpenMM::Platform::getPlatform(i).getName();
+    return names.str();
+}
 
 inline double temperatureK(double kineticKJ, int nAtoms, bool removeCM) {
     int dof = 3 * nAtoms - (removeCM ? 3 : 0);
@@ -146,6 +193,10 @@ struct ForceConfig {
     std::string device;
     bool checkConsistency = false;
     bool periodic = false;
+    /// "" (autograd), "forces", "stress", or "both".
+    std::string nonConservative;
+    /// Number of leading particles the model sees; 0 means all of them.
+    int subset = 0;
 };
 
 inline OpenMM::System* makeSystem(const Geometry& geom, const ForceConfig& config) {
@@ -159,7 +210,21 @@ inline OpenMM::System* makeSystem(const Geometry& geom, const ForceConfig& confi
     if (!config.device.empty())
         force->setDevice(config.device);
     force->setCheckConsistency(config.checkConsistency);
-    force->setAtomicTypes(geom.types);
+    force->setNonConservative(config.nonConservative);
+    const int n = static_cast<int>(geom.types.size());
+    if (config.subset > 0 && config.subset < n) {
+        std::vector<int> particles(config.subset);
+        std::vector<int> types(config.subset);
+        for (int i = 0; i < config.subset; i++) {
+            particles[i] = i;
+            types[i] = geom.types[i];
+        }
+        force->setParticles(particles);
+        force->setAtomicTypes(types);
+    }
+    else {
+        force->setAtomicTypes(geom.types);
+    }
     force->setUsesPeriodicBoundaryConditions(config.periodic || geom.periodic);
     system->addForce(force);
     return system;

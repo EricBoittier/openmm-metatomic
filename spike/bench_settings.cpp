@@ -61,6 +61,10 @@ int main(int argc, char** argv) {
         std::vector<std::string> models = {"harmonic", "harmonic-nl"};
         std::vector<std::string> backends = {"core", "torch"};
         std::vector<std::string> devices = {"cpu"};
+        // The default platform list has to be built after the plugins are in,
+        // or CPU and CUDA are not registered yet. --plugins-dir can still point
+        // somewhere else; that reload is harmless.
+        loadPlatformPlugins();
         std::vector<std::string> platforms;
         for (int i = 0; i < Platform::getNumPlatforms(); i++) {
             const auto name = Platform::getPlatform(i).getName();
@@ -70,6 +74,8 @@ int main(int argc, char** argv) {
         if (platforms.empty())
             platforms = {"Reference"};
         std::vector<std::string> nls = {"vesin", "naive"};
+        std::vector<std::string> forceModes = {""};
+        std::vector<int> subsets = {0};
         std::vector<int> consistency = {0};
         std::vector<int> harmonicAtoms = {3000, 15000, 60000};
         std::vector<int> boxMol = {256, 1000, 5000};
@@ -101,6 +107,14 @@ int main(int argc, char** argv) {
             else if (arg == "--devices") { devices = split(need(i)); i++; }
             else if (arg == "--platforms") { platforms = split(need(i)); i++; }
             else if (arg == "--nl") { nls = split(need(i)); i++; }
+            else if (arg == "--forces") {
+                // "auto" is the autograd path; anything else goes to setNonConservative.
+                forceModes.clear();
+                for (auto& mode : split(need(i)))
+                    forceModes.push_back(mode == "auto" ? "" : mode);
+                i++;
+            }
+            else if (arg == "--subsets") { subsets = splitInts(need(i)); i++; }
             else if (arg == "--consistency") { consistency = splitInts(need(i)); i++; }
             else if (arg == "--harmonic-atoms") { harmonicAtoms = splitInts(need(i)); i++; }
             else if (arg == "--box-mol") { boxMol = splitInts(need(i)); i++; }
@@ -125,12 +139,12 @@ int main(int argc, char** argv) {
                     "openmm-metatomic-bench-settings [options]\n"
                     "  --harmonic-atoms 3000,15000,60000  --box-mol 256,1000,5000  --pet-mol 32,96\n"
                     "  --eval 11 --warmup-eval 8 --warmup-step 10 --nve 20 --nvt 20\n"
-                    "  --consistency 0  --naive-max-n 800\n";
+                    "  --consistency 0  --naive-max-n 800\n"
+                    "  --forces auto,forces  --subsets 0,15  (0 = every particle)\n";
                 return 0;
             }
         }
-        if (!pluginsDir.empty())
-            Platform::loadPluginsFromDirectory(pluginsDir);
+        loadPlatformPlugins(pluginsDir);
 
         std::cout << std::left << std::setw(56) << "case"
                   << std::right << std::setw(8) << "N"
@@ -194,19 +208,29 @@ int main(int argc, char** argv) {
                         for (const auto& nl : nlsFor) {
                             if (nl == "naive" && static_cast<int>(geom.types.size()) > naiveMaxAtoms)
                                 continue;
-                            ForceConfig cfg;
-                            cfg.modelPath = path;
-                            cfg.backend = backend;
-                            cfg.device = device;
-                            cfg.checkConsistency = cons != 0;
-                            cfg.periodic = periodic;
-                            std::ostringstream label;
-                            label << model << "/" << backend << "/" << device
-                                  << "/" << platform
-                                  << (cons ? "/cons" : "/nocon")
-                                  << "/" << nl
-                                  << "/N" << geom.types.size();
-                            emit(label.str(), geom, cfg, platform, nl);
+                            for (const auto& forceMode : forceModes) {
+                                for (int subset : subsets) {
+                                    if (subset >= static_cast<int>(geom.types.size()))
+                                        continue;
+                                    ForceConfig cfg;
+                                    cfg.modelPath = path;
+                                    cfg.backend = backend;
+                                    cfg.device = device;
+                                    cfg.checkConsistency = cons != 0;
+                                    cfg.periodic = periodic;
+                                    cfg.nonConservative = forceMode;
+                                    cfg.subset = subset;
+                                    std::ostringstream label;
+                                    label << model << "/" << backend << "/" << device
+                                          << "/" << platform
+                                          << (cons ? "/cons" : "/nocon")
+                                          << "/" << nl
+                                          << "/" << (forceMode.empty() ? "autograd" : forceMode)
+                                          << (subset > 0 ? "/sub" + std::to_string(subset) : "")
+                                          << "/N" << geom.types.size();
+                                    emit(label.str(), geom, cfg, platform, nl);
+                                }
+                            }
                         }
                     }
                 }

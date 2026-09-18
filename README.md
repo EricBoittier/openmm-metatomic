@@ -98,13 +98,46 @@ PYTHONPATH=$PWD/build/python OPENMM_PLUGIN_DIR=$PWD/build \
 
 ## Status
 
-Milestone 0–2 are done. `MetatomicForce` runs through a real `OpenMM::Context`
-(energy, conservative forces, periodic systems, vesin pair lists, both
-backends). Verlet-list skin/caching across steps is still open (Phase 3).
+Milestones 0–3 and 5–7 are done, M4 is declined on measurement.
+`MetatomicForce` runs through a real
+`OpenMM::Context` (energy, conservative forces, periodic systems, vesin pair
+lists, both backends) and now covers the rest of what
+`MLPotential("metatomic")` does: particle subsets, per-axis PBC,
+non-conservative forces, output variants, energy uncertainty, and charge/spin
+inputs. The plugin also *is* an OpenMM-ML backend:
+
+```python
+from openmmml import MLPotential
+import openmmmetatomic; openmmmetatomic.register()  # or the entry point
+
+potential = MLPotential("metatomic-native", modelPath="model.pt")
+mixed = potential.createMixedSystem(topology, mm_system, ml_atoms)
+```
+
+so mixed ML/MM systems, `lambda_interpolate` and link atoms come from
+OpenMM-ML unchanged. A non-conservative *stress* is requested and validated but
+cannot drive an integrator (OpenMM has no virial path); NPT goes through a
+`MonteCarloBarostat`.
+
+`setDevice("cuda")` runs the model on the GPU on any OpenMM platform —
+`CustomCPPForceImpl` exchanges host buffers either way. PET-MAD-XS on an
+RTX 4060 Ti is 2.8x faster than CPU at 96 atoms and 8.6x at 288, while the
+host↔device copies cost 23–49 µs, so M4 (zero-copy DLPack) is declined rather
+than implemented.
+
+Pair lists are cached across steps: every neighbor-list request keeps its
+`vesin` list alive behind a Verlet skin (`OPENMM_METATOMIC_NEIGHBOR_SKIN`, nm,
+default 0.05, 0 to disable). Cached and fresh runs agree exactly. That is 24%
+per step on a model cheap enough for the list to matter and 1–2% on
+PET-MAD-XS, whose forward dominates everything else.
 
 Python bindings (`from openmmmetatomic import MetatomicForce`) and NVE/NVT
-drivers live in the plugin: `openmm-metatomic-run-md` and
-`openmm-metatomic-bench-settings`. Building it needs `metatensor-core` >=0.2.5;
+drivers live in the plugin: `openmm-metatomic-run-md`,
+`openmm-metatomic-bench-settings` and `openmm-metatomic-bench-cuda`. The
+drivers register OpenMM's platform plugins from the build's `OPENMM_DIR`;
+point `OPENMM_METATOMIC_PLUGINS_DIR` or `--plugins-dir` elsewhere if your
+OpenMM lives somewhere else, or they will only find `Reference`. Building
+needs `metatensor-core` >=0.2.5;
 see "Fixed" in [CHANGELOG.md](CHANGELOG.md#unreleased) for the build recipe if
 the vendored `metatensor` checkout is older. See [ROADMAP.md](ROADMAP.md).
 Timing baselines (2026-09-16, 2026-09-17, including scaling with atom count,

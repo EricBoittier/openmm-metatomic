@@ -85,6 +85,39 @@ Native plugin
 -------------
 
 Once the SWIG wrappers are built, the same ``.pt`` can go through
-``MetatomicForce`` instead of ``PythonForce`` (gallery ``plot_11``). That
-path does not yet expose non-conservative heads, uncertainty, or OpenMM-ML
-embeddings; use OpenMM-ML when you need those.
+``MetatomicForce`` instead of ``PythonForce``, either directly (gallery
+``plot_11``) or as an OpenMM-ML backend::
+
+    from openmmml import MLPotential
+    import openmmmetatomic
+
+    openmmmetatomic.register()          # entry point does this when installed
+    potential = MLPotential(
+        "metatomic-native",
+        modelPath="model.pt",
+        device="cpu",
+        non_conservative="forces",      # same keywords as "metatomic"
+        variants={"energy": "pbe"},
+        uncertainty_threshold=0.1,
+        backend="auto",                 # extra: "torch" or "core"
+    )
+    mixed = potential.createMixedSystem(topology, mm_system, ml_atoms)
+
+``MechanicalEmbedding`` only calls ``potential.addForces(...)``, so mixed
+systems, ``lambda_interpolate`` and link atoms behave exactly as they do with
+``MLPotential("metatomic")``. Two differences worth knowing:
+
+* the native backend answers ``getMLLongRange()`` with ``False`` instead of
+  ``None``, so mechanical embedding already knows the ML part is local and
+  rejects an explicit ``mlLongRange`` argument;
+* a non-conservative *stress* is requested and validated, but OpenMM has no
+  virial path, so it cannot drive an integrator. NPT works through a
+  ``MonteCarloBarostat``, which finite-differences the energy.
+
+``plot_16_native_vs_pythonforce.py`` runs both backends on identical Systems.
+On PET-MAD-XS the mixed toluene-in-water box (15 ML atoms of 6,495) comes out
+the same (415 ms either way) — the model forward dominates — while toluene in
+vacuum favours the native path a little: 12.6 ms vs 11.1 ms (1.13x), or
+6.6 ms vs 5.4 ms (1.23x) with the direct force head. Energies agree to
+~1e-3 kJ/mol and forces to ~1e-2 kJ/mol/nm, the level expected from a float32
+model evaluated with two different neighbor-list builds.

@@ -31,10 +31,12 @@ add_custom_command(
         "${CMAKE_CURRENT_SOURCE_DIR}/src/swig/MetatomicForce.i"
     COMMAND ${CMAKE_COMMAND} -E copy
         "${CMAKE_CURRENT_SOURCE_DIR}/openmmmetatomic/__init__.py"
-        "${CMAKE_CURRENT_BINARY_DIR}/openmmmetatomic/__init__.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/openmmmetatomic/openmmml.py"
+        "${CMAKE_CURRENT_BINARY_DIR}/openmmmetatomic/"
     DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/src/swig/MetatomicForce.i"
         "${CMAKE_CURRENT_SOURCE_DIR}/openmmmetatomic/__init__.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/openmmmetatomic/openmmml.py"
         OpenMMMetatomic
     WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
     COMMENT "SWIG wrap MetatomicForce"
@@ -67,5 +69,23 @@ add_test(
         "from openmmmetatomic import MetatomicForce; f=MetatomicForce('harmonic'); f.setBackend('core'); f.setAtomicTypes([1,1,8]); assert f.getModelPath()=='harmonic'"
 )
 set_tests_properties(python-metatomic-force PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR};OPENMM_PLUGIN_DIR=${CMAKE_BINARY_DIR}"
+)
+
+add_test(
+    NAME python-serialization
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q
+        "${CMAKE_SOURCE_DIR}/tests/python/test_serialization.py"
+)
+set_tests_properties(python-serialization PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR};OPENMM_PLUGIN_DIR=${CMAKE_BINARY_DIR}"
+)
+
+add_test(
+    NAME python-openmmml-native
+    COMMAND ${Python3_EXECUTABLE} -m pytest -q
+        "${CMAKE_SOURCE_DIR}/tests/python/test_openmmml_native.py"
+)
+set_tests_properties(python-openmmml-native PROPERTIES
     ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_BINARY_DIR};OPENMM_PLUGIN_DIR=${CMAKE_BINARY_DIR}"
 )
