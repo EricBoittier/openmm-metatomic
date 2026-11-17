@@ -1,31 +1,64 @@
 %pythonbegin %{
 import os
+import warnings
 from pathlib import Path
+
+_PLUGIN_LIBRARY = "libOpenMMMetatomic.so"
+
+
+def _openmmmetatomic_plugin_candidates():
+    """Directories to look for the plugin library in, most specific first.
+
+    Every path here is absolute. An earlier version appended
+    ``Path(os.environ.get("OPENMM_METATOMIC_ROOT", "")) / "build"``, which
+    collapses to the relative ``build`` when the variable is unset, so running
+    from a directory that happened to contain a ``build/`` subdirectory loaded
+    that copy of the plugin instead of the installed one.
+    """
+    env = os.environ.get("OPENMM_PLUGIN_DIR")
+    if env:
+        yield Path(env).resolve()
+    root = os.environ.get("OPENMM_METATOMIC_ROOT")
+    if root:
+        yield (Path(root) / "build").resolve()
+    here = Path(__file__).resolve().parent
+    yield here                       # installed beside the package
+    yield here.parent                # python/ in a build tree
+    yield here.parent.parent         # the CMake build root, where the
+                                     # library is written before install
+    yield here.parent.parent / "build"
+
 
 def _load_openmmmetatomic_plugin():
     from openmm import Platform
-    dirs = []
-    env = os.environ.get("OPENMM_PLUGIN_DIR")
-    if env:
-        dirs.append(env)
-    here = Path(__file__).resolve().parent
-    for cand in (
-        here,
-        here.parent,
-        here.parent.parent / "build",
-        Path(os.environ.get("OPENMM_METATOMIC_ROOT", "")) / "build",
-    ):
-        if cand and (cand / "libOpenMMMetatomic.so").is_file():
-            dirs.append(str(cand))
+
+    failures = []
     seen = set()
-    for directory in dirs:
-        if not directory or directory in seen:
+    for directory in _openmmmetatomic_plugin_candidates():
+        if directory in seen or not (directory / _PLUGIN_LIBRARY).is_file():
             continue
         seen.add(directory)
         try:
-            Platform.loadPluginsFromDirectory(directory)
-        except Exception:
-            pass
+            Platform.loadPluginsFromDirectory(str(directory))
+        except Exception as error:
+            failures.append((directory, error))
+            continue
+        # Stop at the first one that worked: loading a second copy registers
+        # the plugin twice, and which registration wins is not defined.
+        return directory
+
+    warnings.warn(
+        "could not load {}, so its registerPlatforms/registerKernelFactories "
+        "entry points were never called. Looked in: {}. {}".format(
+            _PLUGIN_LIBRARY,
+            ", ".join(str(d) for d in _openmmmetatomic_plugin_candidates()),
+            "; ".join("{}: {}".format(d, e) for d, e in failures) or "no directory had it",
+        ),
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    return None
+
 
 _load_openmmmetatomic_plugin()
 %}

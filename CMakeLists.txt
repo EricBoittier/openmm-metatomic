@@ -5,6 +5,18 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# An empty CMAKE_BUILD_TYPE means no optimisation flags at all, which here is a
+# plugin that evaluates a model every MD step: a build configured without it was
+# timed at 36.5 ms/step against 30.7 for the same commit at -O3. Default to
+# Release and say so, rather than letting a benchmark measure -O0 by accident.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING
+        "Build type (Release, RelWithDebInfo, Debug, MinSizeRel)" FORCE)
+    message(STATUS "CMAKE_BUILD_TYPE was unset; defaulting to Release")
+endif()
+set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
+    Release RelWithDebInfo Debug MinSizeRel)
+
 option(OPENMM_METATOMIC_TORCH "Build the TorchScript (.pt) backend" ON)
 set(OPENMM_DIR "" CACHE PATH "OpenMM install prefix (headers + libOpenMM)")
 
@@ -74,7 +86,42 @@ endfunction()
 
 openmm_metatomic_detect_prefixes()
 
-find_package(metatensor 0.2.5 CONFIG REQUIRED)
+# metatomic-core's headers call TensorBlock::unsafe_view_from_ptr,
+# TensorMap::unsafe_from_ptr and a public TensorBlock::release(). A 0.2.5 floor
+# was used to require those, but the released metatensor-core 0.2.4 has all
+# three (verified: 0.2.4's metatensor/tensor.hpp and block.hpp, and this
+# project compiles clean against them), so that floor rejected a configuration
+# that works. Ask for the feature instead of guessing a version.
+find_package(metatensor 0.2.4 CONFIG REQUIRED)
+include(CheckCXXSourceCompiles)
+get_target_property(_mts_includes metatensor::shared INTERFACE_INCLUDE_DIRECTORIES)
+set(CMAKE_REQUIRED_INCLUDES ${_mts_includes})
+set(CMAKE_REQUIRED_FLAGS "-std=c++17")
+# These helpers are header-only but call into libmetatensor, and the default
+# try_compile links an executable, so without this the check fails to link and
+# reports a missing feature.
+set(_saved_try_compile_target_type ${CMAKE_TRY_COMPILE_TARGET_TYPE})
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+check_cxx_source_compiles("
+#include <metatensor.hpp>
+void probe() {
+    auto block = metatensor::TensorBlock::unsafe_view_from_ptr(nullptr);
+    auto map = metatensor::TensorMap::unsafe_from_ptr(nullptr);
+    (void) block.release();
+    (void) map.release();
+}
+" METATENSOR_HAS_UNSAFE_PTR_HELPERS)
+set(CMAKE_TRY_COMPILE_TARGET_TYPE ${_saved_try_compile_target_type})
+unset(CMAKE_REQUIRED_INCLUDES)
+unset(CMAKE_REQUIRED_FLAGS)
+if(NOT METATENSOR_HAS_UNSAFE_PTR_HELPERS)
+    message(FATAL_ERROR
+        "metatensor ${metatensor_VERSION} at ${_mts_includes} lacks "
+        "TensorBlock::unsafe_view_from_ptr / TensorMap::unsafe_from_ptr / "
+        "release(), which metatomic-core's headers need. Upgrade "
+        "metatensor-core (0.2.4 and later carry them)."
+    )
+endif()
 find_package(metatomic CONFIG REQUIRED)
 
 function(openmm_metatomic_import_torch)
