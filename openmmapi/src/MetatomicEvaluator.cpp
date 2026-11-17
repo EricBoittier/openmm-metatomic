@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -139,6 +140,8 @@ int64_t pairCapacityGuess(
         );
         volume = std::abs(box[0].dot(cross));
     }
+    // Without full PBC there is no cell volume to take a density from, so this
+    // keeps vesin's own floor and leans on the retry.
     int64_t guess = 128;
     if (volume > 0.0 && n > 0) {
         const double shellVolume = 4.0 / 3.0 * M_PI * radius * radius * radius;
@@ -400,9 +403,12 @@ public:
         options.cutoff = cutoff;
         options.full = full;
         options.sorted = false;
-        // vesin's own "auto" only leaves brute force at n >= 5000, but the cell
-        // list already wins well below that, so pick it here instead.
-        options.algorithm = n >= cudaCellListThreshold() ? VesinCellList : VesinBruteForce;
+        // vesin's own "auto" only leaves brute force at n >= 5000, and measured
+        // here the cell list is already ahead by 4096 points, so ask for it
+        // sooner. Below the threshold stay on "auto" rather than naming brute
+        // force: "auto" is what escalates a triclinic box or a cutoff past
+        // L/2 to a cell list, where brute force throws instead.
+        options.algorithm = n >= cudaCellListThreshold() ? VesinCellList : VesinAutoAlgorithm;
         options.skin = neighborSkinNm();
         options.n_threads = 0;
         options.return_shifts = true;
@@ -419,9 +425,12 @@ public:
         static const bool capacityFromCaller =
             std::getenv("VESIN_CUDA_MAX_PAIRS_PER_POINT") != nullptr;
         string message;
-        for (int attempt = 0; attempt < 5; attempt++) {
+        for (int attempt = capacityAttempt; attempt < 5; attempt++) {
             if (!capacityFromCaller)
                 setPairCapacity(pairCapacityGuess(n, box, pbc, cutoff + options.skin, attempt));
+            // Remember what worked: starting from 0 again would overflow, free
+            // the list and so throw vesin's skin cache away every step.
+            capacityAttempt = attempt;
             const char* error = nullptr;
             const int status = vesin_neighbors(
                 reinterpret_cast<const double(*)[3]>(pointsDev.data_ptr<double>()),
@@ -449,6 +458,21 @@ public:
         }
         if (!message.empty())
             throw OpenMMException("MetatomicForce: " + message);
+        // A positive signal, so "no fallback warning" is not the only evidence
+        // that the list ran where it was asked to.
+        if (std::getenv("OPENMM_METATOMIC_NEIGHBOR_VERBOSE")) {
+            static bool announced = false;
+            if (!announced) {
+                announced = true;
+                fprintf(
+                    stderr,
+                    "MetatomicForce: neighbor list on CUDA device %d,"
+                    " %zu pairs for %lld points\n",
+                    device.index() < 0 ? 0 : int(device.index()),
+                    cached.length, static_cast<long long>(n)
+                );
+            }
+        }
         devicePairs.length = cached.length;
         devicePairs.pairs = cached.pairs;
         devicePairs.shifts = cached.shifts;
@@ -461,6 +485,7 @@ public:
     // growing. A dense box can exceed that, so the first failure latches this
     // list onto the host path instead of raising: same numbers, slower.
     bool cudaUnavailable = false;
+    int capacityAttempt = 0;
 
     torch::Tensor pointsDev;
     torch::Tensor boxDev;
@@ -650,6 +675,20 @@ void addNeighborList(
 #ifdef OPENMM_METATOMIC_USE_VESIN
     bool onCuda = device.is_cuda() && useVesinNeighbors() && useCudaNeighbors()
                   && !neighborList.cudaUnavailable;
+    if (std::getenv("OPENMM_METATOMIC_NEIGHBOR_VERBOSE")) {
+        static bool explained = false;
+        if (!explained) {
+            explained = true;
+            fprintf(
+                stderr,
+                "MetatomicForce: neighbor list device decision: model_device=%s"
+                " vesin=%d cuda_requested=%d latched_off=%d -> %s\n",
+                device.str().c_str(), int(useVesinNeighbors()),
+                int(useCudaNeighbors()), int(neighborList.cudaUnavailable),
+                onCuda ? "cuda" : "host"
+            );
+        }
+    }
 #else
     const bool onCuda = false;
 #endif
@@ -662,8 +701,10 @@ void addNeighborList(
         catch (const OpenMMException& e) {
             neighborList.cudaUnavailable = true;
             onCuda = false;
-            std::cerr << "MetatomicForce: falling back to a host neighbor list: "
-                      << e.what() << std::endl;
+            fprintf(
+                stderr, "MetatomicForce: falling back to a host neighbor list: %s\n",
+                e.what()
+            );
         }
     if (onCuda) {
         const auto& dev = *devPtr;
