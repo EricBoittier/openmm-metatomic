@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <iostream>
 #include <memory>
 #include <sstream>
 #include <unordered_set>
@@ -97,6 +98,77 @@ bool useVesinNeighbors() {
 #else
     return false;
 #endif
+}
+
+#ifdef OPENMM_METATOMIC_TORCH
+void ensureTensor(torch::Tensor& tensor, torch::IntArrayRef sizes, torch::TensorOptions options) {
+    if (!tensor.defined() || tensor.sizes() != sizes)
+        tensor = torch::empty(sizes, options);
+}
+#endif
+
+// Point count above which the CUDA list uses a cell list rather than brute
+// force. vesin's own threshold is 5000, which leaves brute force running well
+// past the crossover; measured here it is a few hundred.
+int64_t cudaCellListThreshold() {
+    const char* value = std::getenv("OPENMM_METATOMIC_NEIGHBOR_CELL_LIST_FROM");
+    if (value == nullptr || value[0] == '\0')
+        return 1000;
+    try {
+        return max<int64_t>(0, std::stoll(value));
+    }
+    catch (const exception&) {
+        throw OpenMMException(
+            "MetatomicForce: OPENMM_METATOMIC_NEIGHBOR_CELL_LIST_FROM must be a point count"
+        );
+    }
+}
+
+// Pairs per point to ask vesin's CUDA path for: the mean neighbour count the
+// box's own density implies, with a factor of 2 of headroom, doubled once per
+// retry. The floor matches vesin's own.
+int64_t pairCapacityGuess(
+    int64_t n, const Vec3 box[3], const array<bool, 3>& pbc, double radius, int attempt
+) {
+    double volume = 0.0;
+    if (pbc[0] && pbc[1] && pbc[2]) {
+        const Vec3 cross(
+            box[1][1] * box[2][2] - box[1][2] * box[2][1],
+            box[1][2] * box[2][0] - box[1][0] * box[2][2],
+            box[1][0] * box[2][1] - box[1][1] * box[2][0]
+        );
+        volume = std::abs(box[0].dot(cross));
+    }
+    int64_t guess = 128;
+    if (volume > 0.0 && n > 0) {
+        const double shellVolume = 4.0 / 3.0 * M_PI * radius * radius * radius;
+        guess = static_cast<int64_t>(std::ceil(2.0 * shellVolume * n / volume));
+    }
+    guess = max<int64_t>(128, guess) << attempt;
+    // Capacity is n * guess pairs at ~60 bytes each, so cap it rather than
+    // trying to allocate tens of gigabytes before giving up to the host path.
+    return min<int64_t>(guess, 8192);
+}
+
+void setPairCapacity(int64_t value) {
+    const string text = to_string(value);
+    ::setenv("VESIN_CUDA_MAX_PAIRS_PER_POINT", text.c_str(), 1);
+}
+
+// Where vesin should build the list: "auto" follows the model's device, "cpu"
+// pins it to the host. Read every call, like the two knobs above, so a single
+// process can A/B the two.
+bool useCudaNeighbors() {
+    const char* value = std::getenv("OPENMM_METATOMIC_NEIGHBOR_DEVICE");
+    if (value == nullptr || value[0] == '\0')
+        return true;
+    if (std::strcmp(value, "cpu") == 0 || std::strcmp(value, "host") == 0)
+        return false;
+    if (std::strcmp(value, "auto") == 0 || std::strcmp(value, "cuda") == 0)
+        return true;
+    throw OpenMMException(
+        "MetatomicForce: OPENMM_METATOMIC_NEIGHBOR_DEVICE must be 'auto', 'cuda' or 'cpu'"
+    );
 }
 
 RawNeighborPairs computeNeighborPairsNaive(
@@ -277,6 +349,124 @@ private:
 
     VesinNeighborList cached{};
     vector<array<double, 3>> points;
+
+#ifdef OPENMM_METATOMIC_TORCH
+public:
+    /**
+     * The same list, built on the GPU and left there.
+     *
+     * vesin's CUDA path takes device pointers for points/box/periodic and
+     * returns device pointers, so nothing in here crosses the bus except the
+     * positions, which have to move anyway. `pairs`/`shifts`/`vectors` below
+     * point into vesin's own device allocations; they stay valid until the next
+     * call on this object or vesin_free().
+     */
+    struct DevicePairs {
+        size_t length = 0;
+        const size_t (*pairs)[2] = nullptr;
+        const int32_t (*shifts)[3] = nullptr;
+        const double (*vectors)[3] = nullptr;
+    };
+
+    const DevicePairs& computeCuda(
+        const vector<Vec3>& positions, const Vec3 box[3], const array<bool, 3>& pbc,
+        double cutoff, bool full, torch::Device device
+    ) {
+        const int64_t n = static_cast<int64_t>(positions.size());
+        auto f64 = torch::TensorOptions().dtype(torch::kFloat64);
+        // Positions arrive as a host vector<Vec3>, which is 3 doubles with no
+        // padding, so the blob is already the {n, 3} matrix vesin wants.
+        auto hostPoints = torch::from_blob(
+            const_cast<Vec3*>(positions.data()), {n, 3}, f64
+        );
+        ensureTensor(pointsDev, {n, 3}, f64.device(device));
+        pointsDev.copy_(hostPoints);
+
+        double cellRaw[9];
+        for (int i = 0; i < 3; i++)
+            for (int j = 0; j < 3; j++)
+                cellRaw[3 * i + j] = box[i][j];
+        auto hostCell = torch::from_blob(cellRaw, {3, 3}, f64);
+        ensureTensor(boxDev, {3, 3}, f64.device(device));
+        boxDev.copy_(hostCell);
+
+        bool pbcRaw[3] = {pbc[0], pbc[1], pbc[2]};
+        auto boolOptions = torch::TensorOptions().dtype(torch::kBool);
+        auto hostPbc = torch::from_blob(pbcRaw, {3}, boolOptions);
+        ensureTensor(pbcDev, {3}, boolOptions.device(device));
+        pbcDev.copy_(hostPbc);
+
+        VesinOptions options{};
+        options.cutoff = cutoff;
+        options.full = full;
+        options.sorted = false;
+        // vesin's own "auto" only leaves brute force at n >= 5000, but the cell
+        // list already wins well below that, so pick it here instead.
+        options.algorithm = n >= cudaCellListThreshold() ? VesinCellList : VesinBruteForce;
+        options.skin = neighborSkinNm();
+        options.n_threads = 0;
+        options.return_shifts = true;
+        options.return_distances = false;
+        options.return_vectors = true;
+
+        // vesin's CUDA path pre-allocates n_points * VESIN_CUDA_MAX_PAIRS_PER_POINT
+        // pairs and overflows instead of growing. Its own default is
+        // max(128, ceil(cutoff^3)), which in nm is always just 128 whatever the
+        // density, so a condensed-phase box overflows it. Start from the box's
+        // own density and double on overflow rather than modelling the margin.
+        // Read once: setPairCapacity() below would otherwise make the next
+        // iteration mistake our own value for the caller's.
+        static const bool capacityFromCaller =
+            std::getenv("VESIN_CUDA_MAX_PAIRS_PER_POINT") != nullptr;
+        string message;
+        for (int attempt = 0; attempt < 5; attempt++) {
+            if (!capacityFromCaller)
+                setPairCapacity(pairCapacityGuess(n, box, pbc, cutoff + options.skin, attempt));
+            const char* error = nullptr;
+            const int status = vesin_neighbors(
+                reinterpret_cast<const double(*)[3]>(pointsDev.data_ptr<double>()),
+                static_cast<size_t>(n),
+                reinterpret_cast<const double(*)[3]>(boxDev.data_ptr<double>()),
+                pbcDev.data_ptr<bool>(),
+                VesinDevice{VesinCUDA, device.index() < 0 ? 0 : device.index()},
+                options,
+                &cached,
+                &error
+            );
+            if (status == 0) {
+                message.clear();
+                break;
+            }
+            message = error ? error : "vesin neighbor list failed";
+            // A fresh list is what lets the next attempt pick up the new
+            // capacity: the old one carries its allocation in `opaque`.
+            vesin_free(&cached);
+            cached = VesinNeighborList{};
+            if (message.find("exceeds the maximum capacity") == string::npos)
+                break;
+            if (capacityFromCaller)
+                break;  // the caller chose the capacity; do not override it
+        }
+        if (!message.empty())
+            throw OpenMMException("MetatomicForce: " + message);
+        devicePairs.length = cached.length;
+        devicePairs.pairs = cached.pairs;
+        devicePairs.shifts = cached.shifts;
+        devicePairs.vectors = cached.vectors;
+        return devicePairs;
+    }
+
+    // vesin's CUDA list pre-allocates a fixed number of pairs per point
+    // (VESIN_CUDA_MAX_PAIRS_PER_POINT, 128 by default) and fails rather than
+    // growing. A dense box can exceed that, so the first failure latches this
+    // list onto the host path instead of raising: same numbers, slower.
+    bool cudaUnavailable = false;
+
+    torch::Tensor pointsDev;
+    torch::Tensor boxDev;
+    torch::Tensor pbcDev;
+    DevicePairs devicePairs;
+#endif
 #endif
     RawNeighborPairs pairs;
 };
@@ -430,11 +620,6 @@ metatensor_torch::TensorMap systemScalarTorch(
     return tensor->to(dtype, device);
 }
 
-void ensureTensor(torch::Tensor& tensor, torch::IntArrayRef sizes, torch::TensorOptions options) {
-    if (!tensor.defined() || tensor.sizes() != sizes)
-        tensor = torch::empty(sizes, options);
-}
-
 /// Device copies of one pair-list request, resized only when the pair count
 /// changes. copy_() on a hit avoids the per-step clone()+alloc of the old path.
 struct NeighborUpload {
@@ -456,19 +641,69 @@ void addNeighborList(
 ) {
     const double cutoff = request->engine_cutoff("nm");
     const bool full = request->full_list();
-    const auto& raw = neighborList.compute(positions, box, pbc, cutoff, full);
-    const int64_t nPairs = static_cast<int64_t>(raw.size());
 
     // from_blob does not own vesin's buffers. copy_() into persistent device
     // tensors so a cached list does not allocate; vectors still move every step.
-    auto sampleSrc = torch::from_blob(
-        const_cast<int32_t*>(raw.samples.data()), {nPairs, 5},
-        torch::TensorOptions().dtype(torch::kInt32)
-    );
-    auto vectorSrc = torch::from_blob(
-        const_cast<double*>(raw.vectors.data()), {nPairs, 3, 1},
-        torch::TensorOptions().dtype(torch::kFloat64)
-    );
+    int64_t nPairs = 0;
+    torch::Tensor sampleSrc;
+    torch::Tensor vectorSrc;
+#ifdef OPENMM_METATOMIC_USE_VESIN
+    bool onCuda = device.is_cuda() && useVesinNeighbors() && useCudaNeighbors()
+                  && !neighborList.cudaUnavailable;
+#else
+    const bool onCuda = false;
+#endif
+#ifdef OPENMM_METATOMIC_USE_VESIN
+    if (onCuda) {
+        const NeighborList::DevicePairs* devPtr = nullptr;
+        try {
+            devPtr = &neighborList.computeCuda(positions, box, pbc, cutoff, full, device);
+        }
+        catch (const OpenMMException& e) {
+            neighborList.cudaUnavailable = true;
+            onCuda = false;
+            std::cerr << "MetatomicForce: falling back to a host neighbor list: "
+                      << e.what() << std::endl;
+        }
+    if (onCuda) {
+        const auto& dev = *devPtr;
+        nPairs = static_cast<int64_t>(dev.length);
+        if (nPairs > 0) {
+            // vesin numbers its pairs in size_t and metatensor wants int32, so
+            // the narrowing happens on the device rather than in a host loop.
+            auto pairColumns = torch::from_blob(
+                const_cast<size_t*>(&dev.pairs[0][0]), {nPairs, 2},
+                torch::TensorOptions().dtype(torch::kInt64).device(device)
+            ).to(torch::kInt32);
+            auto shiftColumns = dev.shifts
+                ? torch::from_blob(
+                      const_cast<int32_t*>(&dev.shifts[0][0]), {nPairs, 3},
+                      torch::TensorOptions().dtype(torch::kInt32).device(device)
+                  )
+                : torch::zeros(
+                      {nPairs, 3}, torch::TensorOptions().dtype(torch::kInt32).device(device)
+                  );
+            sampleSrc = torch::cat({pairColumns, shiftColumns}, 1);
+            vectorSrc = torch::from_blob(
+                const_cast<double*>(&dev.vectors[0][0]), {nPairs, 3, 1},
+                torch::TensorOptions().dtype(torch::kFloat64).device(device)
+            );
+        }
+    }
+    }
+#endif
+    if (!onCuda) {
+        const auto& raw = neighborList.compute(positions, box, pbc, cutoff, full);
+        nPairs = static_cast<int64_t>(raw.size());
+        sampleSrc = torch::from_blob(
+            const_cast<int32_t*>(raw.samples.data()), {nPairs, 5},
+            torch::TensorOptions().dtype(torch::kInt32)
+        );
+        vectorSrc = torch::from_blob(
+            const_cast<double*>(raw.vectors.data()), {nPairs, 3, 1},
+            torch::TensorOptions().dtype(torch::kFloat64)
+        );
+    }
     ensureTensor(
         upload.samples, {nPairs, 5},
         torch::TensorOptions().dtype(torch::kInt32).device(device)
