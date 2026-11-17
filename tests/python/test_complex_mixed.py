@@ -41,12 +41,12 @@ def potentials(model_path):
     openmmmetatomic.register()
     _openmm.ensure_openmm_ml_embeddings()
     return (
-        MLPotential("metatomic", modelPath=model_path, device="cpu", uncertainty_threshold=None),
+        MLPotential("metatomic", model=model_path, device="cpu", uncertaintyThreshold=None),
         MLPotential(
             "metatomic-native",
             modelPath=model_path,
             device="cpu",
-            uncertainty_threshold=None,
+            uncertaintyThreshold=None,
         ),
     )
 

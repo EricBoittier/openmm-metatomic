@@ -79,7 +79,7 @@ class MetatomicNativePotentialImplFactory:
     def createImpl(
         self,
         name,
-        modelPath,
+        modelPath=None,
         device=None,
         extensionsDirectory=None,
         checkConsistency=False,
@@ -87,8 +87,29 @@ class MetatomicNativePotentialImplFactory:
         variants=None,
         uncertainty_threshold=0.1,
         backend="auto",
+        model=None,
+        nonConservative=None,
+        uncertaintyThreshold=None,
         **args,
     ):
+        # openmm-ml's own metatomic factory takes `model`, `nonConservative` and
+        # `uncertaintyThreshold`; this one grew the snake_case spellings. Accept
+        # both so the same MLPotential(...) call works against either backend,
+        # which is the whole point of this being a drop-in.
+        if model is not None:
+            if modelPath is not None and modelPath != model:
+                raise TypeError(
+                    "pass either `model` or `modelPath`, not both with "
+                    "different values"
+                )
+            modelPath = model
+        if modelPath is None:
+            raise TypeError("createImpl() needs `model` (or `modelPath`)")
+        if nonConservative is not None:
+            non_conservative = nonConservative
+        if uncertaintyThreshold is not None:
+            uncertainty_threshold = uncertaintyThreshold
+
         return MetatomicNativePotentialImpl(
             name,
             modelPath,

@@ -98,7 +98,7 @@ def potentials(model_path):
     openmmmetatomic.register()
     _openmm.ensure_openmm_ml_embeddings()
     return (
-        MLPotential("metatomic", modelPath=model_path, device="cpu"),
+        MLPotential("metatomic", model=model_path, device="cpu"),
         MLPotential("metatomic-native", modelPath=model_path, device="cpu"),
     )
 
@@ -220,7 +220,7 @@ def test_non_conservative_needs_an_output(harmonic_toluene):
         "metatomic-native",
         modelPath=model_path,
         device="cpu",
-        non_conservative="forces",
+        nonConservative="forces",
     )
     system = potential.createSystem(pdb.topology)
     with pytest.raises(Exception, match="non_conservative_force"):
