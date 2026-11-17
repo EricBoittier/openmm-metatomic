@@ -404,11 +404,20 @@ public:
         options.return_distances = false;
         options.return_vectors = true;
 
-        // vesin's CUDA path pre-allocates n_points * VESIN_CUDA_MAX_PAIRS_PER_POINT
-        // pairs and overflows instead of growing. Its own default is
-        // max(128, ceil(cutoff^3)), which in nm is always just 128 whatever the
-        // density, so a condensed-phase box overflows it. Start from the box's
-        // own density and double on overflow rather than modelling the margin.
+        // vesin 0.6.x's CUDA path pre-allocates
+        // n_points * VESIN_CUDA_MAX_PAIRS_PER_POINT pairs and overflows instead
+        // of growing. Its own default is max(128, ceil(cutoff^3)), which in nm
+        // is always just 128 whatever the density, so a condensed-phase box
+        // overflows it. Start from the box's own density and double on overflow
+        // rather than modelling the margin.
+        //
+        // vesin's main branch has fixed this -- brute force grows the buffer
+        // and keeps the larger allocation, and the env var is listed as
+        // removed -- but that is unreleased: 0.6.2 is the newest tag and the
+        // newest release on PyPI, and this overflow is fatal on every released
+        // version. Main is also not a drop-in: vesin_neighbors() there takes a
+        // stream argument this call does not pass, so the port has to happen
+        // before any of this can be dropped.
         // Read once: setPairCapacity() below would otherwise make the next
         // iteration mistake our own value for the caller's.
         static const bool capacityFromCaller =
