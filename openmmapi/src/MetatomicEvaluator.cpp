@@ -108,23 +108,6 @@ void ensureTensor(torch::Tensor& tensor, torch::IntArrayRef sizes, torch::Tensor
 }
 #endif
 
-// Point count above which the CUDA list uses a cell list rather than brute
-// force. vesin's own threshold is 5000, which leaves brute force running well
-// past the crossover; measured here it is a few hundred.
-int64_t cudaCellListThreshold() {
-    const char* value = std::getenv("OPENMM_METATOMIC_NEIGHBOR_CELL_LIST_FROM");
-    if (value == nullptr || value[0] == '\0')
-        return 1000;
-    try {
-        return max<int64_t>(0, std::stoll(value));
-    }
-    catch (const exception&) {
-        throw OpenMMException(
-            "MetatomicForce: OPENMM_METATOMIC_NEIGHBOR_CELL_LIST_FROM must be a point count"
-        );
-    }
-}
-
 // Pairs per point to ask vesin's CUDA path for: the mean neighbour count the
 // box's own density implies, with a factor of 2 of headroom, doubled once per
 // retry. The floor matches vesin's own.
@@ -403,12 +386,18 @@ public:
         options.cutoff = cutoff;
         options.full = full;
         options.sorted = false;
-        // vesin's own "auto" only leaves brute force at n >= 5000, and measured
-        // here the cell list is already ahead by 4096 points, so ask for it
-        // sooner. Below the threshold stay on "auto" rather than naming brute
-        // force: "auto" is what escalates a triclinic box or a cutoff past
-        // L/2 to a cell list, where brute force throws instead.
-        options.algorithm = n >= cudaCellListThreshold() ? VesinCellList : VesinAutoAlgorithm;
+        // "auto" rather than a named algorithm, because "auto" is what
+        // escalates a triclinic box or a cutoff past L/2 to a cell list, where
+        // VesinBruteForce throws instead (vesin_cuda.cpp:403-418).
+        //
+        // With a skin this field is in fact ignored: vesin_cuda.cpp:857 routes
+        // any skin > 0 into its Verlet cache, which builds the candidate list
+        // with a hard-coded VesinCellList (verlet_cuda.cpp:233). Measured at
+        // 2000 points of water and a 0.75 nm cutoff, naming brute force or the
+        // cell list gives 0.322 ms either way with skin = 0.05, against 0.99
+        // and 1.35 ms with skin = 0. So the choice only reaches vesin when the
+        // skin knob is set to 0, and the cache is worth more than the choice.
+        options.algorithm = VesinAutoAlgorithm;
         options.skin = neighborSkinNm();
         options.n_threads = 0;
         options.return_shifts = true;
